@@ -1,0 +1,224 @@
+---
+title: "GSM Frontend Feature Areas: Login to Productivity"
+sidebarTitle: Features
+description: "Detailed documentation for the GSM frontend's key feature areas: tenant login, dashboard, productivity wizard, products module, module renderers, and session management."
+---
+
+The GSM frontend is divided into self-contained feature modules under `src/features/`. Each module owns its pages, sub-components, hooks, and types. This page documents every major feature area with the real API contracts and component logic sourced directly from the codebase.
+
+## Login & Tenant Resolution
+
+The login page is a two-panel layout: a form on the left and a branded hero on the right. Before credentials are accepted, the application resolves the tenant to fetch its theme and branding.
+
+<Steps>
+  <Step title="Tenant resolution">
+    The login form pre-populates a Company ID from the `VITE_TENANT_DEFAULT` build variable. When the ID changes (either via the tenant switcher buttons or a manual edit), `resolveCompany()` fires a `POST` request:
+
+    ```
+    POST /api/security/v1/tenant/resolve
+    { "IDCompany": "IH001" }
+    ```
+
+    A successful response contains a `jsonStyles` field — a serialised `TenantTheme` object with `meta` (name, initials, logo, tagline, defaultLocale) and `light` / `dark` CSS custom property maps. The app parses this and injects the properties onto `document.documentElement` so Tailwind's CSS variables pick them up instantly.
+  </Step>
+  <Step title="CSS variable application">
+    `applyThemeVarsFromCache()` in `src/shared/lib/theme.ts` replays the last known tenant's CSS variables from `localStorage` on every hard reload, preventing a flash of unstyled content before the resolve request completes.
+  </Step>
+  <Step title="Credential submission">
+    After the company name and logo appear, the user enters their username and password. Submitting the form calls `login()` in `src/shared/lib/auth.ts`:
+
+    ```
+    POST /api/security/v1/Auth/login
+    { "IDCompany": "IH001", "User": "jsmith", "Password": "••••••••" }
+    ```
+
+    On success the backend sets the HttpOnly `gsm_token` cookie. The frontend simultaneously writes three non-HttpOnly cookies for client-side use:
+
+    | Cookie | Value |
+    |---|---|
+    | `gsm_exp` | JWT expiry as Unix timestamp |
+    | `gsm_user_name` | Authenticated user's display name |
+    | `gsm_company` | The resolved Company ID |
+  </Step>
+  <Step title="Post-login navigation">
+    If the backend marks `passwordChangeRequired: true`, the page transitions to the inline `ChangePasswordForm` before any redirect. Otherwise the router navigates to `/:locale/dashboard`.
+  </Step>
+</Steps>
+
+<Note>
+  Both `Unauthorized` and `NotFound` error types from the login endpoint are mapped to the generic `errors.unauthorized` translation key to prevent user enumeration.
+</Note>
+
+---
+
+## Dashboard
+
+`DashboardPage` is the landing screen shown at `/:locale/dashboard`. It is composed of two sections rendered in sequence.
+
+### QuickCards
+
+Shortcut items from the menu API (`IsShortcut: true`) are rendered as clickable cards that navigate directly to their respective module routes. If exactly one shortcut exists and the user has just logged in (detected via `location.state?.fromLogin`), the app auto-redirects to that module instead of showing the dashboard.
+
+### DashboardActivity
+
+`DashboardActivity` fetches two lists from the operations API and renders them as clickable item lists inside a two-column grid:
+
+- **Release Activity** (`activity` section) — common operational tasks, shown with a primary-coloured dot indicator
+- **Company News** (`news` section) — latest updates, shown with a secondary-coloured dot indicator
+
+Clicking any item opens a Radix UI `Dialog` that renders the item's content. The content type determines the viewer:
+
+- `type: 'url'` → an external link button
+- Any other type → a responsive iframe via `ResponsiveIframe`
+
+---
+
+## Productivity Module
+
+`ProductivityPage` (`src/features/productivity/`) is the most complex module in the application. It records herb harvest labor assignments and tracks their real-time progress. The page toggles between two views via a tab bar.
+
+### Assignment View (Wizard)
+
+`AssignmentWizard` is a three-step wizard:
+
+<Steps>
+  <Step title="Step 1 — Product / Variety / SKU">
+    The user selects a product category, subcategory, and parameters to build a SKU string. Available varieties for the generated SKU are fetched from the products API. An initial quantity field completes the product selection.
+  </Step>
+  <Step title="Step 2 — Employees">
+    Employees are loaded from the operations API and displayed grouped by role. The user can assign them in **Groups** mode (automatic grouping with configurable min/max per group) or **Individual** mode (manual per-person selection). A search field filters the list in real time.
+  </Step>
+  <Step title="Step 3 — Grower / Supplier">
+    A paginated, searchable table of growers/suppliers is presented. The user selects one or more growers, chooses a production type, and enters an ITC (traceability code) per grower. A summary panel confirms the full assignment before submission.
+  </Step>
+</Steps>
+
+When the wizard is confirmed, `handleComplete()` calls `createTransaction()` for every assignment unit in parallel:
+
+```ts
+await Promise.all(payloads.map(p => createTransaction(p)))
+```
+
+Each transaction uses the `PRDLBR` prefix and is created with `INPROGRESS` status.
+
+### Checkout View
+
+The Checkout view shows cards for every active `INPROGRESS` transaction. It uses a **stale-while-revalidate** pattern: the app immediately renders existing card state while `loadActiveCheckout()` refreshes from the backend in the background.
+
+```ts
+// Persistence on reload — restores state from the backend
+async function loadActiveCheckout(): Promise<UnitCheckout[]> {
+  const res = await getTransaction({ trxPrefix: 'PRDLBR', status: 'INPROGRESS' })
+  return mapTrxToUnits(res.data?.data ?? [])
+}
+```
+
+Each card supports three operations:
+
+| Action | API call | Optimistic update |
+|---|---|---|
+| **Lap** (record partial quantity + waste) | `PATCH /api/operations/v1/operations/:id` with lap detail | Yes — reverted on error |
+| **Complete** (close the transaction) | `PATCH` with complete payload + optional final lap | Yes — reverted on error |
+| **Cancel** (void the transaction) | `PATCH` with cancel payload | Yes — card restored on error |
+
+<Warning>
+  Checkout state survives page reloads because active transactions are re-fetched from the backend on mount. However, optimistic lap edits that have not yet been confirmed by the server will be lost on a hard reload.
+</Warning>
+
+---
+
+## Products Module
+
+`ProductsPage` (`src/features/products/`) renders a `ProductWizard` that lets users browse and select herb products by navigating category → subcategory → parameters → SKU. The selected product and initial quantity are surfaced for use in downstream operations such as the Productivity wizard. The page layout mirrors the Productivity step 1 but operates as a standalone module accessible from the sidebar.
+
+---
+
+## Module Renderers
+
+When a menu item has an `ExternalRoute` value, `ModulePage` hands control to `ExternalPage`, which selects a renderer based on the item's `ActiveType` field.
+
+<Tabs>
+  <Tab title="IframeRenderer">
+    Embeds the external URL in a full-height `<iframe>` inside a card shell. A header bar shows the module title and an "open in new tab" button. The sandbox attribute permits scripts, same-origin requests, forms, and pop-ups.
+
+    ```tsx
+    // src/shared/components/renderers/IframeRenderer.tsx
+    <iframe
+      src={url}
+      title={title}
+      className="flex-1 border-0"
+      allow="fullscreen"
+      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+    />
+    ```
+  </Tab>
+  <Tab title="NhBiRenderer">
+    Designed for embedded BI dashboards. Before rendering the iframe it calls `useBiEmbed(url)`, which exchanges the raw BI URL for a signed embed URL via the integrations API. A loading state and an error state are shown while the exchange is in progress.
+
+    ```tsx
+    // src/shared/components/renderers/NhBiRenderer.tsx
+    const state = useBiEmbed(url)
+
+    if (state.status === 'loading') return <LoadingMessage />
+    if (state.status === 'error')   return <ErrorMessage message={state.message} />
+
+    return <iframe src={state.embedUrl} title={title} allow="fullscreen" />
+    ```
+  </Tab>
+  <Tab title="NewTabRenderer">
+    Opens the `ExternalRoute` URL directly in a new browser tab using `window.open`. In the app shell a dialog confirms the action and shows the URL before the user proceeds. No iframe is rendered.
+  </Tab>
+  <Tab title="Built-in Modules">
+    When the slug matches a key in the `modules` registry inside `ModulePage`, the corresponding React component is lazy-loaded via `React.lazy` and wrapped in a `<Suspense>` boundary with a skeleton fallback. No external URL is involved.
+  </Tab>
+</Tabs>
+
+---
+
+## Session Management
+
+Session state is stored across two mechanisms: an HttpOnly cookie for the JWT itself, and several readable cookies plus `sessionStorage` for client-accessible metadata.
+
+<Accordion title="Cookie reference">
+  | Cookie | Readable by JS | Contents |
+  |---|---|---|
+  | `gsm_token` | No (HttpOnly) | JWT — sent automatically with every credentialed `fetch` |
+  | `gsm_exp` | Yes | JWT expiry as a Unix timestamp string |
+  | `gsm_user_name` | Yes | Authenticated user's display name |
+  | `gsm_company` | Yes | Active Company ID |
+  | `gsm_pwd_change` | Yes | `"1"` if a forced password change is required |
+</Accordion>
+
+<Accordion title="sessionStorage key">
+  | Key | Contents |
+  |---|---|
+  | `gsm_user` | Serialised `AuthenticatedUserDto` (full name, username, email, location, department, profile ID) |
+</Accordion>
+
+### Password Change
+
+If the backend sets `passwordChangeRequired: true` in the login response, the frontend sets `gsm_pwd_change=1`. `AuthGuard` detects this flag and redirects to the forced password-change form before any protected route is accessible. The change is submitted to:
+
+```
+PUT /api/application/v1/users/:idUser/password
+{ "oldPassword": "…", "newPassword": "…" }
+```
+
+On success, `gsm_pwd_change` is removed and the user proceeds normally.
+
+### Logout
+
+`logout()` in `src/shared/lib/auth.ts` removes all client-side cookies and clears `sessionStorage`, then fires a fire-and-forget `POST /api/security/v1/Auth/logout` to instruct the server to clear the HttpOnly `gsm_token` cookie.
+
+```ts
+export function logout(): void {
+  Cookies.remove('gsm_exp')
+  Cookies.remove('gsm_user_name')
+  Cookies.remove('gsm_company')
+  Cookies.remove('gsm_pwd_change')
+  sessionStorage.clear()
+  fetch('/api/security/v1/Auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {})
+}
+```
+
+The logout button in the Sidebar always triggers this function, after which React Router navigates to `/:locale/login`.

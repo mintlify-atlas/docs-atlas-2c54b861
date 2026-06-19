@@ -1,0 +1,146 @@
+---
+title: "POST /api/security/v1/auth/logout — User Logout"
+sidebarTitle: "Logout"
+description: "Terminate an authenticated session by deleting the gsm_token cookie server-side. Requires a valid Bearer token or the gsm_token cookie."
+---
+
+The logout endpoint terminates the current authenticated session. It instructs the server to delete the `gsm_token` HttpOnly cookie, ensuring the credential cannot be reused by the browser on subsequent requests. The endpoint requires an active, valid JWT — either supplied automatically via the `gsm_token` cookie (the standard browser flow) or as an `Authorization: Bearer` header for server-to-server scenarios. No request body is needed.
+
+<Note>
+  Deleting the `gsm_token` cookie server-side is the recommended invalidation strategy for browser clients because the cookie is `HttpOnly` — client-side JavaScript cannot remove it directly. After a successful logout, the browser will no longer send the cookie, effectively ending the session.
+</Note>
+
+## Endpoint
+
+```
+POST /api/security/v1/auth/logout
+```
+
+**Authentication:** Required — `[Authorize]`. Send the `gsm_token` cookie (set automatically by the browser after login) or include an `Authorization: Bearer <token>` header.
+
+**Request body:** None.
+
+---
+
+## Response
+
+The response uses the standard `ApiResponse<T>` envelope with no `data` payload.
+
+<ResponseField name="success" type="boolean">
+  `true` when the session was terminated successfully.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable confirmation. Returns `"Logged out successfully."` on success.
+</ResponseField>
+
+<ResponseField name="data" type="null">
+  Always `null` for this endpoint — there is no data payload on logout.
+</ResponseField>
+
+<ResponseField name="errorType" type="string | null">
+  `null` on success. Set to `Unauthorized` if the request carries no valid token.
+</ResponseField>
+
+<ResponseField name="traceId" type="string | null">
+  Optional correlation identifier for tracing.
+</ResponseField>
+
+<ResponseField name="details" type="string | null">
+  Optional extended error detail in non-production environments.
+</ResponseField>
+
+### Cookie cleared on success
+
+| Name | Action |
+|------|--------|
+| `gsm_token` | Deleted (`Path=/`) |
+
+The server calls `Response.Cookies.Delete("gsm_token")`, which instructs the browser to expire the cookie immediately.
+
+---
+
+## HTTP Status Codes
+
+| Status | `errorType` | Scenario |
+|--------|-------------|----------|
+| `200 OK` | — | Logout succeeded; cookie has been cleared. |
+| `401 Unauthorized` | `Unauthorized` | No valid token was provided, or the token has already expired. |
+
+---
+
+## Examples
+
+### cURL (cookie-based — browser flow)
+
+```bash
+curl --request POST \
+  --url https://your-gateway-host/api/security/v1/auth/logout \
+  --cookie "gsm_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+### cURL (Bearer token — server-to-server)
+
+```bash
+curl --request POST \
+  --url https://your-gateway-host/api/security/v1/auth/logout \
+  --header "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+### TypeScript (fetch — browser client)
+
+```typescript
+interface ApiResponse<T> {
+  success: boolean;
+  message: string;
+  data: T | null;
+  errorType: string | null;
+  traceId: string | null;
+  details: string | null;
+}
+
+async function logout(): Promise<void> {
+  const response = await fetch("/api/security/v1/auth/logout", {
+    method: "POST",
+    // credentials: "include" sends the gsm_token cookie automatically.
+    // The server will delete it in the Set-Cookie response header.
+    credentials: "include",
+  });
+
+  const result: ApiResponse<null> = await response.json();
+
+  if (!result.success) {
+    throw new Error(`Logout failed [${result.errorType}]: ${result.message}`);
+  }
+
+  // The gsm_token cookie has been cleared by the server.
+  // Redirect the user to the login page or clear local state here.
+  window.location.href = "/login";
+}
+```
+
+### Success response example
+
+```json
+{
+  "success": true,
+  "message": "Logged out successfully.",
+  "data": null,
+  "errorType": null,
+  "traceId": null,
+  "details": null
+}
+```
+
+### Unauthenticated response example
+
+```json
+{
+  "success": false,
+  "message": "Unauthorized",
+  "data": null,
+  "errorType": "Unauthorized",
+  "traceId": null,
+  "details": null
+}
+```

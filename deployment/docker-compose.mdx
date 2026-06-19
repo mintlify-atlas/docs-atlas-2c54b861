@@ -1,0 +1,152 @@
+---
+title: "Running GSM Application with Docker Compose"
+sidebarTitle: Docker Compose
+description: "How to build and run the full GSM Application stack locally using Docker Compose, including service ports, health checks, network topology, and common commands."
+---
+
+The repository ships a single `docker-compose.yml` at the project root that builds and wires together all five GSM services. It is the fastest way to get a fully integrated stack running on a developer machine without manually starting each service.
+
+## Services Overview
+
+The stack contains five services, all joined to the same bridge network `gsm-network`. Container-to-container traffic uses Docker service names as hostnames.
+
+| Service | Internal port | Published port | Health-check endpoint |
+|---|---|---|---|
+| `frontend` | 80 | **3000** | *(none — depends on gateway health)* |
+| `gateway` | 80 | **80** | `GET http://localhost:80/api/health` |
+| `gsmauth` | 8081 | *(not published)* | `GET http://localhost:8081/health` |
+| `gsmapplication` | 8082 | *(not published)* | `GET http://localhost:8082/health` |
+| `gsmoperations` | 8083 | *(not published)* | `GET http://localhost:8083/health` |
+
+The three microservices are not exposed on the host directly; all external traffic enters through the gateway on port 80 and is forwarded to the appropriate service by YARP.
+
+## Service Dependency Chain
+
+Docker Compose enforces a strict startup order using health checks:
+
+```
+frontend
+  └── depends on: gateway (healthy)
+        └── depends on: gsmauth (healthy)
+                        gsmapplication (healthy)
+                        gsmoperations (healthy)
+```
+
+The gateway will not start accepting traffic until all three microservices have passed their health checks. The frontend container will not start until the gateway itself is healthy. This prevents the SPA from attempting API requests before the backend is ready.
+
+## YARP Gateway Cluster Addresses
+
+Inside the Docker Compose network, the gateway's reverse proxy (YARP) resolves microservices using their Docker service names:
+
+```yaml
+# docker-compose.yml — gateway environment
+ReverseProxy__Clusters__gsmAuthCluster__Destinations__authDestination__Address: http://gsmauth:8081/
+ReverseProxy__Clusters__gsmApplicationCluster__Destinations__applicationDestination__Address: http://gsmapplication:8082/
+ReverseProxy__Clusters__gsmOperationsCluster__Destinations__operationsDestination__Address: http://gsmoperations:8083/
+```
+
+These addresses only resolve inside the `gsm-network` bridge network. In production (AWS ECS) the equivalent addresses are configured through environment-specific task definition environment variables.
+
+## Frontend Build Arguments
+
+The frontend image is built from `./gsmapplications-frontend` with two build arguments passed at Docker build time:
+
+```yaml
+# docker-compose.yml — frontend build args
+build:
+  context: ./gsmapplications-frontend
+  dockerfile: Dockerfile
+  args:
+    VITE_TENANT_DEFAULT: ${VITE_TENANT_DEFAULT:-IH001}
+    VITE_TENANT_IDS: ${VITE_TENANT_IDS:-IH001,AG001}
+```
+
+These variables are read from your `.env` file (or from the environment). The defaults shown (`IH001` and `IH001,AG001`) are used if no value is provided.
+
+<Note>
+  `VITE_TENANT_IDS` is a Vite build-time variable that is compiled into the JavaScript bundle. If you need to change the list of available tenant IDs, you must rebuild the frontend image. Running `docker compose up` without `--build` will not pick up the change.
+</Note>
+
+## Environment File
+
+Copy `.env.example` to `.env` and fill in the required values before running Compose:
+
+```bash
+cp .env.example .env
+```
+
+```ini
+# .env
+JWT_SECRET=your-strong-secret-here
+
+# SQL Server connection string for the master tenant database
+DB_MASTER_URL=Server=YOUR_SERVER;User ID=YOUR_USER;Password=YOUR_PASSWORD;Database=MasterTenant;TrustServerCertificate=True
+
+# Frontend build-time tenant configuration
+VITE_TENANT_DEFAULT=IH001
+VITE_TENANT_IDS=IH001,AG001
+```
+
+The same `JWT_SECRET` must be set on all backend services — they each validate incoming tokens against this shared secret.
+
+## Starting the Stack
+
+<Steps>
+  <Step title="Build and start all services">
+    ```bash
+    docker compose up --build
+    ```
+    Docker will build all five images and start them in dependency order. The first run takes several minutes while images are compiled. Subsequent runs are faster thanks to Docker layer caching.
+  </Step>
+  <Step title="Verify the stack is healthy">
+    Wait for the log output to show all health checks passing. You can check service status at any time:
+
+    ```bash
+    docker compose ps
+    ```
+
+    All services should show `healthy` in the `STATUS` column.
+  </Step>
+  <Step title="Open the application">
+    Navigate to [http://localhost:3000](http://localhost:3000) in your browser. You will be redirected to the login page for the default locale.
+  </Step>
+</Steps>
+
+## Common Commands
+
+```bash
+# Follow live logs from all services
+docker compose logs -f
+
+# Follow logs from a single service
+docker compose logs -f gateway
+
+# Stop all containers (preserves named volumes)
+docker compose down
+
+# Stop and remove all containers and volumes
+docker compose down -v
+
+# Rebuild a single service without restarting others
+docker compose build frontend
+docker compose up -d frontend
+```
+
+## Health Check Configuration
+
+Each backend service is configured with identical health check parameters:
+
+```yaml
+healthcheck:
+  test: ["CMD-SHELL", "wget --no-verbose --tries=1 -O /dev/null http://localhost:<PORT>/health || exit 1"]
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  start_period: 30s
+```
+
+The `start_period` gives each service 30 seconds to initialise before Docker counts failures. With three retries at 30-second intervals, a service has up to 2.5 minutes to become healthy before Docker marks it as unhealthy and blocks downstream dependencies.
+
+<Warning>
+  If `DB_MASTER_URL` is not set or points to an unreachable SQL Server, the auth and application services will fail their health checks and the entire stack will not reach a healthy state. Verify your database connection string before starting Compose.
+</Warning>

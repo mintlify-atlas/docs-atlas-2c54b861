@@ -1,0 +1,233 @@
+---
+title: "GSMAuth: Multi-Tenant Authentication Microservice"
+sidebarTitle: "Auth Service"
+description: "Complete reference for GSMAuth — login flow, JWT claims, cookie handling, tenant resolution endpoint, and environment variable configuration."
+---
+
+GSMAuth is the dedicated authentication microservice for the GSM Application platform. It is the only service that knows how to map a company identifier to a database connection string, validate user credentials against the tenant's `Users` table, and issue signed JWTs carrying the tenant and profile identity claims that every other service relies on. All login traffic enters through the gateway's anonymous `/api/security/**` route and is forwarded to GSMAuth without requiring a prior token.
+
+## Layer Structure
+
+GSMAuth is organized into seven projects following a strict layered architecture:
+
+<CardGroup cols={2}>
+  <Card title="GSMAuth.Api" icon="server">
+    HTTP controllers, Swagger, and request/response pipeline. Hosts `AuthController` and `TenantController`.
+  </Card>
+  <Card title="GSMAuth.Business" icon="briefcase">
+    Login orchestration logic: credential validation, JWT generation, and password hash verification.
+  </Card>
+  <Card title="GSMAuth.Abstractions" icon="file-contract">
+    Interfaces (`IAuthService`, `ITenantConnectionResolver`, `ITenantConfigurationService`) that decouple layers via DIP.
+  </Card>
+  <Card title="GSMAuth.Entities" icon="cube">
+    DTOs (`LoginRequestDto`, `LoginDto`, `AuthenticatedUserDto`, `TenantResolveDto`) and shared value objects.
+  </Card>
+  <Card title="GSMAuth.Tenant" icon="users">
+    Transversal `TenantContext` and tenant middleware. Contains no business logic.
+  </Card>
+  <Card title="GSMAuth.Infrastructure" icon="building">
+    PBKDF2 password hashing, JWT token generation, and `TenantConnectionResolver` implementation.
+  </Card>
+  <Card title="GSMAuth.DataAccess" icon="database">
+    EF Core contexts: `RegistryDbContext` (reads `TenantRegistryDb.Tenants`) and the dynamic per-tenant `DbContext`.
+  </Card>
+</CardGroup>
+
+## Login Flow
+
+Authentication follows a seven-step process that crosses from the HTTP layer down to the tenant database and back.
+
+<Steps>
+  <Step title="Client posts credentials">
+    The caller sends a `POST /api/v1/auth/login` request with the following body:
+
+    ```json
+    {
+      "IDCompany": "IH001",
+      "User":      "jsmith",
+      "Password":  "MyS3cretP@ss"
+    }
+    ```
+
+    All three fields are required. A missing field returns `400 Bad Request`.
+  </Step>
+
+  <Step title="Lookup tenant in the registry">
+    `TenantConnectionResolver` queries `TenantRegistryDb.Tenants` where `CompanyId = IDCompany AND IsActive = 1`. If no active row is found, the service returns `404 Not Found` without touching any tenant database.
+
+    ```csharp
+    // TenantConnectionResolver.cs
+    var tenantRecord = await _registryDbContext.Tenants
+        .AsNoTracking()
+        .FirstOrDefaultAsync(
+            x => x.CompanyId == companyId && x.IsActive,
+            cancellationToken);
+    ```
+  </Step>
+
+  <Step title="Build dynamic tenant connection">
+    The `Server`, `Database`, `DbUser`, and `DbPassword` columns from the registry row are assembled into a connection string, and a scoped `DbContext` targeting the tenant database is instantiated for this request.
+  </Step>
+
+  <Step title="Query the Users table">
+    The tenant-specific `DbContext` queries the `Users` table for a record matching the submitted username.
+  </Step>
+
+  <Step title="Validate password hash and salt">
+    Passwords are stored using PBKDF2. The submitted plaintext password is hashed against the stored `PasswordSalt` and compared to `PasswordHash`. A mismatch returns `401 Unauthorized`.
+  </Step>
+
+  <Step title="Issue JWT">
+    A signed JWT is generated containing three key claims:
+
+    | Claim | Source |
+    |---|---|
+    | `sub` | User identifier (GUID) |
+    | `companyId` | `IDCompany` from the login request |
+    | `idProfile` | Integer profile ID from the Users table |
+
+    The token is signed with the secret configured via `JwtSettings__SecretKey` and bounded by `JwtSettings__Issuer`, `JwtSettings__Audience`, and `JwtSettings__ExpirationMinutes`.
+  </Step>
+
+  <Step title="Return token and set cookie">
+    The controller appends the raw JWT to the `LoginDto` response body and simultaneously sets the `gsm_token` HttpOnly cookie:
+
+    ```csharp
+    Response.Cookies.Append("gsm_token", response.Data.Token, new CookieOptions
+    {
+        HttpOnly = true,
+        SameSite = SameSiteMode.Strict,
+        Expires  = response.Data.ExpiresAtUtc,
+        Path     = "/"
+    });
+    ```
+
+    The response body shape is:
+
+    ```json
+    {
+      "success": true,
+      "data": {
+        "token": "eyJhbGciOiJIUzI1NiIs...",
+        "expiresAtUtc": "2025-07-01T12:00:00Z",
+        "user": {
+          "idUser":                "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+          "username":              "jsmith",
+          "fullName":              "John Smith",
+          "email":                 "jsmith@example.com",
+          "idProfile":             2,
+          "passwordChangeRequired": false,
+          "location":              "Farm A",
+          "department":            "Operations"
+        }
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Endpoints
+
+### `POST /api/v1/auth/login`
+
+Authenticates a user against the tenant database and returns a JWT.
+
+<ParamField body="IDCompany" type="string" required>
+  The company identifier matching a `CompanyId` value in `TenantRegistryDb.Tenants`.
+</ParamField>
+
+<ParamField body="User" type="string" required>
+  The username as stored in the tenant's `Users` table.
+</ParamField>
+
+<ParamField body="Password" type="string" required>
+  The plaintext password. It is never stored — it is hashed on the fly and compared to `PasswordHash`.
+</ParamField>
+
+**Responses:**
+
+| Status | Meaning |
+|---|---|
+| `200 OK` | Credentials valid; body contains `LoginDto` and `gsm_token` cookie is set. |
+| `400 Bad Request` | One or more required fields are missing or malformed. |
+| `401 Unauthorized` | Password hash does not match. |
+| `404 Not Found` | `IDCompany` not found or `IsActive = 0`. |
+| `500 Internal Server Error` | Unexpected error during authentication. |
+
+---
+
+### `POST /api/v1/auth/logout`
+
+Requires a valid Bearer token. Deletes the `gsm_token` cookie by setting its expiry in the past:
+
+```csharp
+Response.Cookies.Delete("gsm_token", new CookieOptions { Path = "/" });
+```
+
+---
+
+### `POST /api/v1/tenant/resolve`
+
+Anonymous endpoint used by the frontend to verify that a company identifier exists and to fetch its theming configuration before the user enters credentials.
+
+<ParamField body="IDCompany" type="string" required>
+  The company identifier to resolve.
+</ParamField>
+
+**Response body:**
+
+<ResponseField name="tenantExists" type="boolean">
+  `true` if an active tenant was found for the given `IDCompany`.
+</ResponseField>
+
+<ResponseField name="jsonStyles" type="string | null">
+  The raw `JsonStyles` JSON string stored in `Tenants.JsonStyles`. Parse this on the client to extract the `light`, `dark`, and `meta` theme properties. See [Tenant Theming](/multi-tenancy/tenant-theming).
+</ResponseField>
+
+## JWT Claims Reference
+
+| Claim | Type | Description |
+|---|---|---|
+| `sub` | `string` (GUID) | Unique user identifier |
+| `companyId` | `string` | Tenant identifier; injected into `X-Company-Id` by the gateway |
+| `idProfile` | `integer` | User's permission profile; injected into `X-Profile-Id` by the gateway |
+
+## Cookie Reference
+
+| Property | Value |
+|---|---|
+| Name | `gsm_token` |
+| HttpOnly | `true` — not accessible from JavaScript |
+| SameSite | `Strict` — not sent on cross-site requests |
+| Path | `/` |
+| Expires | Matches the JWT `ExpiresAtUtc` value |
+
+## Password Storage
+
+Passwords are never stored in plaintext. The `Users` table requires two columns:
+
+- **`PasswordHash`** — the PBKDF2 output of the password combined with the salt.
+- **`PasswordSalt`** — a randomly generated per-user salt.
+
+<Warning>
+  The business fields inherited from older schema versions are not sufficient for authentication. Both `PasswordHash` and `PasswordSalt` must be present in the `Users` table for the login flow to work. If either column is null for a user row, that user will be unable to authenticate.
+</Warning>
+
+## Environment Variables
+
+<ParamField query="DB_MASTER_URL" type="string" required>
+  Connection string to `TenantRegistryDb`. If not set, the service falls back to `ConnectionStrings:TenantRegistryConnection` in `appsettings.json`. In production this variable must be set and the `appsettings.json` value should be left empty or overridden.
+</ParamField>
+
+<ParamField query="JwtSettings__Issuer" type="string">
+  JWT issuer claim. Must match the `Issuer` configured in the gateway. Defaults to `GSMAuth`.
+</ParamField>
+
+<ParamField query="JwtSettings__Audience" type="string">
+  JWT audience claim. Must match the `Audience` configured in the gateway. Defaults to `GSMClients`.
+</ParamField>
+
+<ParamField query="JwtSettings__ExpirationMinutes" type="integer">
+  Token lifetime in minutes. Tokens expire absolutely at `now + ExpirationMinutes`; there is no refresh mechanism.
+</ParamField>

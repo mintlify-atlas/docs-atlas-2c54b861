@@ -1,0 +1,189 @@
+---
+title: "GSM Application GitHub Actions CI/CD Pipeline"
+sidebarTitle: CI/CD
+description: "The GSM Application CI/CD setup: five GitHub Actions workflows, branch-to-environment mapping, AWS ECS backend deploys, and S3 + CloudFront frontend deploys."
+---
+
+Each service in the GSM Application has its own GitHub Actions workflow file under `.github/workflows/`. Workflows are path-scoped, meaning a push to `develop` only triggers the workflow for the service whose files changed. All workflows share the same branch-to-environment mapping logic and use GitHub's OIDC integration to assume AWS IAM roles without storing long-lived credentials as secrets.
+
+## Workflow Files
+
+| Workflow file | Service | Deploy target |
+|---|---|---|
+| `deploy-gsmfrontend.yml` | Frontend SPA | AWS S3 + CloudFront |
+| `deploy-gsmauth-service.yml` | GSMAuth microservice | AWS ECS |
+| `deploy-gsmapplication-service.yml` | GSMApplication microservice | AWS ECS |
+| `deploy-gsmoperations-service.yml` | GSMOperations microservice | AWS ECS |
+| `deploy-gsmgateway-service.yml` | GSMGateway (YARP) | AWS ECS |
+
+## Trigger Conditions
+
+All five workflows share the same trigger pattern:
+
+```yaml
+on:
+  push:
+    branches: ["develop"]
+    paths:
+      - "<service-path>/**"   # path-scoped to the service
+  pull_request:
+    branches: ["develop", "main"]
+    types: [closed]
+    paths:
+      - "<service-path>/**"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment (dev/qa/prod)'
+        default: 'dev'
+```
+
+- **Push to `develop`** — fires when files in the service's directory are modified directly on the branch.
+- **Pull request merged to `develop` or `main`** — the `types: [closed]` combined with `github.event.pull_request.merged == true` ensures the deploy only runs on actual merges, not on PR closures without a merge.
+- **Manual `workflow_dispatch`** — allows targeting any environment by entering `dev`, `qa`, or `prod` in the GitHub Actions UI.
+
+## Branch → Environment Mapping
+
+Every workflow contains a `determine-env` job that sets the target environment based on the branch name or the manual dispatch input:
+
+| Branch | Environment |
+|---|---|
+| `develop` | `dev` |
+| `quality` | `qa` |
+| `main` | `prod` |
+
+```yaml
+# From determine-env job
+if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+  ENV="${{ github.event.inputs.environment }}"
+else
+  BRANCH="${{ github.ref_name }}"
+  if   [ "$BRANCH" = "main"    ]; then ENV="prod"
+  elif [ "$BRANCH" = "quality" ]; then ENV="qa"
+  elif [ "$BRANCH" = "develop" ]; then ENV="dev"
+  else                                 ENV="dev"
+  fi
+fi
+```
+
+The resolved environment name is then used to select the matching GitHub Actions environment (`frontend-dev`, `frontend-qa`, `frontend-prod` for the frontend; `backend-dev`, `backend-qa`, `backend-prod` for backend services), which gates access to the environment-specific secrets and variables.
+
+## Feature Flags
+
+Each workflow checks a repository variable before running any job:
+
+| Workflow | Feature-flag variable |
+|---|---|
+| Frontend | `WORKFLOW_FRONTEND_ENABLED` |
+| All backend services | `WORKFLOW_BACKEND_ENABLED` |
+
+If the variable is not set to `"true"`, both the `determine-env` and `deploy` jobs are skipped entirely.
+
+<Tip>
+  Set `WORKFLOW_BACKEND_ENABLED` to `"true"` in **Settings → Secrets and variables → Variables** at the repository level to enable backend service deployments. Individual environments can override this value at the environment level if you want to gate production deploys separately.
+</Tip>
+
+## Required Secrets & Variables Per Environment
+
+<Tabs>
+  <Tab title="Frontend">
+    Configured on the `frontend-dev`, `frontend-qa`, and `frontend-prod` GitHub Actions environments.
+
+    | Name | Type | Description |
+    |---|---|---|
+    | `AWS_INFRA_ROLE_ARN` | Secret | IAM role ARN that GitHub Actions assumes via OIDC to get AWS access |
+    | `S3_BUCKET_NAME` | Variable | S3 bucket where the built `dist/` folder is synced |
+    | `CLOUDFRONT_DISTRIBUTION_ID` | Variable | CloudFront distribution to invalidate after the S3 sync |
+    | `VITE_TENANT_DEFAULT` | Variable | Default Company ID baked into the frontend bundle at build time |
+    | `VITE_TENANT_IDS` | Variable | Comma-separated list of selectable tenant IDs baked into the bundle |
+  </Tab>
+  <Tab title="Backend Services">
+    Configured on the `backend-dev`, `backend-qa`, and `backend-prod` GitHub Actions environments.
+
+    | Name | Type | Description |
+    |---|---|---|
+    | `AWS_INFRA_ROLE_ARN` | Secret | IAM role ARN assumed via OIDC for ECR and ECS access |
+    | `ECR_REPOSITORY` | Variable | ECR repository name (all services share one repository, tagged by service prefix) |
+    | `APP_NAME` | Variable | Application name prefix used to construct ECS task family names |
+    | `ECS_CLUSTER` | Variable | ECS cluster name where services are deployed |
+    | `AUTH_SERVICE_NAME` | Variable | ECS service name for GSMAuth |
+    | `APPLICATION_SERVICE_NAME` | Variable | ECS service name for GSMApplication |
+    | `GSMOPERATIONS_SERVICE_NAME` | Variable | ECS service name for GSMOperations |
+    | `GATEWAY_SERVICE_NAME` | Variable | ECS service name for GSMGateway |
+  </Tab>
+</Tabs>
+
+## Frontend Deployment Pipeline
+
+<Steps>
+  <Step title="Install dependencies">
+    Node.js 22 is set up with npm cache keyed to `package-lock.json`. Dependencies are installed with `npm ci` for reproducible installs.
+  </Step>
+  <Step title="Generate API clients">
+    ```bash
+    npm run generate
+    ```
+    Orval regenerates the typed API hooks from the OpenAPI specs in `swagger/`. This ensures the build always uses the latest API surface even if generated files were not committed.
+  </Step>
+  <Step title="Build the SPA">
+    ```bash
+    npm run build
+    ```
+    `VITE_TENANT_DEFAULT` and `VITE_TENANT_IDS` are injected as environment variables from GitHub Actions environment variables, so the correct tenant configuration is baked into the bundle for each target environment.
+  </Step>
+  <Step title="Sync to S3">
+    ```bash
+    aws s3 sync ./dist/ s3://${{ vars.S3_BUCKET_NAME }}/admin/ \
+      --delete \
+      --checksum-algorithm SHA256
+    ```
+    The `--delete` flag removes files from S3 that no longer exist in `dist/`. SHA-256 checksums are used for transfer integrity verification.
+  </Step>
+  <Step title="Invalidate CloudFront cache">
+    The workflow first waits for the CloudFront distribution to reach the `Deployed` state, then creates a wildcard invalidation (`/*`) so users immediately receive the new bundle on their next request.
+  </Step>
+</Steps>
+
+## Backend Service Deployment Pipeline
+
+All four backend workflows (auth, application, operations, gateway) follow the same steps.
+
+<Steps>
+  <Step title="Configure AWS credentials">
+    The `aws-actions/configure-aws-credentials@v4` action assumes the `AWS_INFRA_ROLE_ARN` using GitHub's OIDC provider. No AWS access keys are stored in GitHub.
+  </Step>
+  <Step title="Build and push Docker image to ECR">
+    Images are built for the `linux/arm64` platform using Docker Buildx and QEMU emulation (for CI runners that are x86-64). Each image is pushed with two tags: a commit SHA tag and a `latest` tag.
+
+    ```bash
+    docker buildx build \
+      --platform linux/arm64 \
+      -t $ECR_REGISTRY/$ECR_REPOSITORY:<service>-$IMAGE_TAG \
+      -t $ECR_REGISTRY/$ECR_REPOSITORY:<service>-latest \
+      --push .
+    ```
+  </Step>
+  <Step title="Update ECS task definition">
+    The workflow fetches the current task definition for the service, replaces the container image URI with the newly pushed image tag using `jq`, strips read-only fields, and registers a new task definition revision.
+
+    Task family names follow the pattern `<env>-<APP_NAME>-<service>-task`, for example `dev-gsmapp-auth-task`.
+  </Step>
+  <Step title="Deploy to ECS">
+    `aws-actions/amazon-ecs-deploy-task-definition@v2` updates the ECS service to use the new task definition revision and waits for service stability before the workflow job completes.
+  </Step>
+</Steps>
+
+<Info>
+  All backend workflows use `wait-for-service-stability: true`, meaning the GitHub Actions job will not report success until ECS confirms that the new task is running and the old task has been drained. This prevents false-positive green builds when a deployment fails to start.
+</Info>
+
+## Environment Architecture Summary
+
+```
+Repository branches
+├── develop  →  dev  environment  (frontend-dev  / backend-dev)
+├── quality  →  qa   environment  (frontend-qa   / backend-qa)
+└── main     →  prod environment  (frontend-prod / backend-prod)
+```
+
+Each GitHub Actions environment can have its own approval rules, secret values, and variable overrides, making it straightforward to promote a build from dev to qa to prod by merging between branches.

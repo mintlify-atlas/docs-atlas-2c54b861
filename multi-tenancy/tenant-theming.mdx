@@ -1,0 +1,232 @@
+---
+title: "Per-Tenant CSS Theming with JsonStyles in GSM"
+sidebarTitle: "Tenant Theming"
+description: "How GSM Application loads, validates, and applies per-company CSS variable themes stored as JSON in the Tenants registry table."
+---
+
+GSM Application delivers a fully branded experience to every tenant without shipping separate front-end builds. Each row in `TenantRegistryDb.Tenants` carries a `JsonStyles` column that encodes a complete design system — light palette, dark palette, and identity metadata — as a single JSON string. When a user types their company identifier on the login page, the frontend fetches that JSON, sanitizes it, and injects scoped CSS variables before the first pixel is painted.
+
+## The JsonStyles Structure
+
+The `JsonStyles` column stores a JSON object with three top-level keys:
+
+<CardGroup cols={2}>
+  <Card title="light" icon="sun">
+    A flat map of CSS custom property names to OKLCH color values used when the interface is in light mode.
+  </Card>
+  <Card title="dark" icon="moon">
+    The equivalent map for dark mode. The same variable names are re-declared under the `.dark` class selector.
+  </Card>
+  <Card title="meta" icon="tag">
+    Identity metadata: tenant name, initials, default locale, an optional logo path, and a localized tagline dictionary.
+  </Card>
+  <Card title="CSS variables" icon="code">
+    Keys must match the pattern `--[\w-]+`. Any key that does not start with `--` is silently skipped during CSS injection.
+  </Card>
+</CardGroup>
+
+### The `meta` Object
+
+```typescript
+meta: {
+  name:          string;               // Display name, e.g. "Infinite Herbs"
+  initials:      string;               // Short identifier shown in the avatar, e.g. "IH"
+  defaultLocale: string;               // BCP-47 locale tag, e.g. "en" or "es"
+  logo?:         string;               // Optional path to the tenant SVG logo asset
+  tagline:       Record<string, string>; // Locale key → tagline string
+}
+```
+
+### The `light` and `dark` Objects
+
+Both `light` and `dark` are flat `Record<string, string>` maps. Keys are CSS custom property names; values are valid CSS color or dimension tokens. The `buildThemeCSS` function accepts only keys matching `--[\w-]+` and rejects any value that contains unsafe patterns (see [Security](#security) below).
+
+## Example: Infinite Herbs (IH001) Theme
+
+The following is the full `JsonStyles` value for the Infinite Herbs tenant, as stored in `seed-tenant-styles.sql`:
+
+```json
+{
+  "light": {
+    "--background":                  "oklch(0.97 0.001 0)",
+    "--foreground":                  "oklch(0.2 0.001 0)",
+    "--card":                        "oklch(0.9940 0 0)",
+    "--card-foreground":             "oklch(0.235 0.001 0)",
+    "--primary":                     "oklch(0.316 0.117 268.481)",
+    "--primary-foreground":          "oklch(1.0000 0 0)",
+    "--secondary":                   "oklch(0.797 0.162 69.201)",
+    "--secondary-foreground":        "oklch(0.264 0.001 0)",
+    "--accent":                      "oklch(0.857 0.048 233.695)",
+    "--accent-foreground":           "oklch(0.468 0.196 260.463)",
+    "--destructive":                 "oklch(0.552 0.221 28.99)",
+    "--border":                      "oklch(0.9300 0.0094 286.2156)",
+    "--sidebar":                     "oklch(0.9777 0.0051 247.8763)",
+    "--sidebar-foreground":          "oklch(0 0 0)",
+    "--sidebar-primary":             "oklch(0 0 0)",
+    "--sidebar-primary-foreground":  "oklch(1.0000 0 0)",
+    "--radius":                      "0.375rem"
+  },
+  "dark": {
+    "--background":                  "oklch(0.2223 0.0060 271.1393)",
+    "--foreground":                  "oklch(0.9551 0 0)",
+    "--primary":                     "oklch(0.6132 0.2294 291.7437)",
+    "--primary-foreground":          "oklch(1.0000 0 0)",
+    "--sidebar":                     "oklch(0.2011 0.0039 286.0396)",
+    "--sidebar-foreground":          "oklch(0.9551 0 0)",
+    "--sidebar-primary":             "oklch(0.6132 0.2294 291.7437)",
+    "--sidebar-primary-foreground":  "oklch(1.0000 0 0)",
+    "--radius":                      "0.375rem"
+  },
+  "meta": {
+    "name":          "Infinite Herbs",
+    "initials":      "IH",
+    "defaultLocale": "en",
+    "logo":          "/ih.svg",
+    "tagline": {
+      "en": "Agricultural Management Platform",
+      "es": "Plataforma de Gestión Agrícola"
+    }
+  }
+}
+```
+
+<Tip>
+  The full production seed includes chart colors, muted tones, popover colors, and ring values. The abbreviated snippet above shows the most commonly referenced variables; refer to `seed-tenant-styles.sql` for the complete definition.
+</Tip>
+
+## How the Frontend Fetches and Applies a Theme
+
+The theming pipeline runs entirely on the client side during the company-resolution step, before the user enters their credentials.
+
+<Steps>
+  <Step title="User enters Company ID">
+    The login page calls `resolveCompany(companyId)` from `src/shared/lib/tenant.ts`, which posts the identifier to the gateway.
+
+    ```typescript
+    const res = await fetch('/api/security/v1/tenant/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ IDCompany: companyId }),
+    });
+    ```
+  </Step>
+
+  <Step title="Auth service returns TenantResolveDto">
+    The `POST /api/security/v1/tenant/resolve` endpoint returns an `ApiResponse<TenantResolveDto>` with two fields:
+
+    ```typescript
+    {
+      success: true,
+      data: {
+        tenantExists: true,
+        jsonStyles: "{ \"light\": { ... }, \"dark\": { ... }, \"meta\": { ... } }"
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Parse and validate the theme">
+    The response body's `data.jsonStyles` string is parsed with `JSON.parse` into a `TenantTheme` object. If the tenant does not exist or `jsonStyles` is null, `resolveCompany` returns `{ valid: false }` and the login form displays an error.
+  </Step>
+
+  <Step title="Build scoped CSS with buildThemeCSS">
+    `buildThemeCSS(theme, tenantSlug)` from `src/shared/lib/theme.ts` produces two CSS rule blocks:
+
+    ```typescript
+    export function buildThemeCSS(theme: TenantTheme, tenantSlug: string): string {
+      const slug = tenantSlug.replace(/[^a-zA-Z0-9_-]/g, '')
+      const sel  = `html[data-tenant="${slug}"]`
+      // ...maps and sanitizes each variable...
+      return `${sel} {\n${toVars(theme.light)}\n}\n${sel}.dark {\n${toVars(theme.dark)}\n}`
+    }
+    ```
+
+    For `IH001` this produces CSS in the form:
+
+    ```css
+    html[data-tenant="IH001"] {
+      --background: oklch(0.97 0.001 0);
+      --primary:    oklch(0.316 0.117 268.481);
+      /* ... */
+    }
+    html[data-tenant="IH001"].dark {
+      --background: oklch(0.2223 0.0060 271.1393);
+      --primary:    oklch(0.6132 0.2294 291.7437);
+      /* ... */
+    }
+    ```
+  </Step>
+
+  <Step title="Inject into the HTML element">
+    The generated CSS is appended to a `<style>` tag and the `data-tenant` attribute is set on `<html>`. From that point on every CSS variable in the application resolves to the tenant's palette.
+  </Step>
+</Steps>
+
+## Security
+
+The `buildThemeCSS` function sanitizes every CSS value before injection to prevent CSS-injection attacks:
+
+```typescript
+const CSS_VAR_NAME_RE    = /^--[\w-]+$/
+const CSS_VALUE_UNSAFE_RE = /url\s*\(|expression\s*\(|[;<>{}\\]/i
+
+function sanitizeCssValue(v: string): string | null {
+  if (typeof v !== 'string') return null
+  if (CSS_VALUE_UNSAFE_RE.test(v)) return null
+  return v.trim()
+}
+```
+
+<Warning>
+  Any CSS value that contains `url()`, `expression()`, semicolons, angle brackets, curly braces, or backslashes is **rejected outright** and the variable is omitted from the generated stylesheet. Ensure that seed data and UPDATE statements only supply valid OKLCH, hex, or dimension tokens.
+</Warning>
+
+Variable name keys are additionally filtered against `--[\w-]+`. Any key that does not begin with `--` or contains characters outside `[a-zA-Z0-9_-]` is silently dropped.
+
+## Setting JsonStyles for a Tenant
+
+To apply or update a tenant's theme, execute an `UPDATE` statement against the registry database:
+
+```sql
+UPDATE dbo.Tenants
+SET JsonStyles = N'{
+  "light": {
+    "--background": "oklch(0.97 0.001 0)",
+    "--primary":    "oklch(0.316 0.117 268.481)"
+  },
+  "dark": {
+    "--background": "oklch(0.2223 0.0060 271.1393)",
+    "--primary":    "oklch(0.6132 0.2294 291.7437)"
+  },
+  "meta": {
+    "name":          "My Company",
+    "initials":      "MC",
+    "defaultLocale": "en",
+    "tagline": { "en": "Grow Better" }
+  }
+}'
+WHERE CompanyId = 'MC001';
+```
+
+<Note>
+  Theme changes take effect on the next company-resolution request. Because `resolveCompany` is called at login time, existing browser sessions are not affected until the user logs out and back in, or clears their locally cached theme variables.
+</Note>
+
+## Caching Theme Variables
+
+After a successful resolve, the light-mode CSS variables are persisted to `localStorage` under the key `gsm_theme_vars` via `cacheThemeVars`. On subsequent page loads `applyThemeVarsFromCache` re-applies them before the resolve round-trip completes, eliminating the flash of un-themed content.
+
+```typescript
+export function cacheThemeVars(vars: Record<string, string>) {
+  localStorage.setItem('gsm_theme_vars', JSON.stringify(vars))
+}
+
+export function applyThemeVarsFromCache() {
+  const cached = localStorage.getItem('gsm_theme_vars')
+  if (!cached) return
+  const vars = JSON.parse(cached) as Record<string, string>
+  Object.entries(vars).forEach(([k, v]) =>
+    document.documentElement.style.setProperty(k, v)
+  )
+}
+```

@@ -1,0 +1,246 @@
+---
+title: "GSMOperations: Agricultural Data and Transactions Service"
+sidebarTitle: "Operations Service"
+description: "Reference for the GSMOperations microservice — herb catalog, employees, suppliers, SKUs, transaction lifecycle management, and the integration execution engine."
+---
+
+GSMOperations is the core business-logic microservice of the GSM Application platform. It owns all operational agricultural data: herb product catalogs, employee and supplier registries, SKU definitions, product categories, and the full transaction lifecycle from creation through state transitions. It also hosts the integration execution engine that runs API rules configured in GSMApplication. Like every GSM microservice, it is fully multi-tenant — each request resolves to an isolated tenant database via the `X-Company-Id` header provided by the gateway.
+
+The service listens on **port 8083** and is reached through the gateway at the `/api/operations/**` prefix.
+
+## Domain Entities
+
+GSMOperations manages a rich agricultural domain. The key entity groups are:
+
+<CardGroup cols={2}>
+  <Card title="Employee" icon="user">
+    Farm workers stored in `db_ms.Employees`. Fields: `IdEmployee`, `FirstName`, `LastName`, `FullName`, `Location`, `ContactNumber`, `Email`, `IsActive`.
+  </Card>
+  <Card title="Supplier" icon="truck">
+    Input and produce suppliers stored in `db_ms.Suppliers`. Fields: `IdSupplier` (GUID), `IdThirdSupplier`, `NameSupplier`, `CategorySupplier`, `Region`, `Country`, `Contact`, `IsActive`.
+  </Card>
+  <Card title="MasterProduct (Herb)" icon="leaf">
+    The herb product catalog. Each record represents a cultivated herb variety and is the root reference for transactions and SKU definitions.
+  </Card>
+  <Card title="MasterVariety" icon="seedling">
+    Specific cultivar or variety within a master product, allowing fine-grained tracking of harvest attributes.
+  </Card>
+  <Card title="Category" icon="folder">
+    Classification groups for products and transactions, used to organize the catalog and filter reports.
+  </Card>
+  <Card title="SKU Definition" icon="barcode">
+    Defines the SKU structure for a product including unit, weight, and packaging configuration.
+  </Card>
+  <Card title="TrxHeader" icon="file-lines">
+    The root transaction record. Carries `TrxPrefix`, description, username, location, and a unique numeric `IdTrxHeader`.
+  </Card>
+  <Card title="TrxDetail / TrxProduct / TrxAttribute / TrxStates" icon="list">
+    Sub-records linked to a `TrxHeader`. Together they model the full structure of a harvest or productivity transaction.
+  </Card>
+</CardGroup>
+
+## Endpoints
+
+### Reference Data
+
+#### `GET /api/v1/operations/parameters`
+
+Returns the full list of global parameters configured for the tenant. Parameters control platform behavior such as default units, rounding rules, and feature flags.
+
+| Status | Condition |
+|---|---|
+| `200 OK` | Parameters returned. |
+| `404 Not Found` | No parameters configured for the tenant. |
+
+---
+
+#### `GET /api/v1/operations/master-products`
+
+Returns the complete herb product catalog for the tenant.
+
+| Status | Condition |
+|---|---|
+| `200 OK` | Product list returned. |
+| `404 Not Found` | No products configured. |
+
+---
+
+#### `GET /api/v1/operations/filtered-employees`
+
+Returns a filtered list of employees. Search criteria are provided in the request body.
+
+<ParamField body="searchCriteria" type="SearchEmployee | null">
+  Optional filter object. When `null` or omitted the full active employee list is returned.
+</ParamField>
+
+Employee records include: `IdEmployee`, `FirstName`, `LastName`, `FullName`, `Location`, `ContactNumber`, `Email`, `IsActive`.
+
+---
+
+#### `GET /api/v1/operations/filtered-suppliers`
+
+Returns a filtered list of suppliers. Accepts an optional `SearchSupplier` body.
+
+<ParamField body="searchCriteria" type="SearchSupplier | null">
+  Optional filter criteria. When `null` or omitted the full active supplier list is returned.
+</ParamField>
+
+Supplier records include: `IdSupplier`, `IdThirdSupplier`, `NameSupplier`, `CategorySupplier`, `Region`, `Country`, `Contact`, `IsActive`.
+
+---
+
+#### `GET /api/v1/operations/categories`
+
+Returns the product category definitions for the tenant. Used to populate category selectors in the UI and to group transactions in reports.
+
+---
+
+#### `GET /api/v1/operations/sku-definitions`
+
+Returns the SKU structure definitions configured for the tenant. Each definition specifies how a unit of a product is packaged, weighed, and labeled.
+
+---
+
+### Transaction Management
+
+#### `POST /api/v1/operations/create-trx`
+
+Creates a new harvest or productivity transaction. A transaction header is created along with its associated details, products, attributes, and initial state records in a single atomic operation.
+
+<ParamField body="trxPrefix" type="string" required>
+  Short prefix code that classifies the transaction type. See the note below for prefix conventions.
+</ParamField>
+
+<ParamField body="descr" type="string">
+  Human-readable description of the transaction.
+</ParamField>
+
+<ParamField body="username" type="string" required>
+  Username of the employee recording the transaction.
+</ParamField>
+
+<ParamField body="location" type="string">
+  Farm location or field identifier where the activity took place.
+</ParamField>
+
+<ParamField body="trxAttributes" type="TrxAttributesDTO[]">
+  Key-value attribute list for extended transaction metadata (e.g. lot number, harvest batch).
+</ParamField>
+
+<ParamField body="trxProducts" type="TrxProductsDTO[]">
+  Products involved in the transaction, each referencing a `MasterProduct` or variety.
+</ParamField>
+
+<ParamField body="trxStates" type="TrxStatesDTO" required>
+  Initial workflow state record for the transaction.
+</ParamField>
+
+<ParamField body="trxDetails" type="TrxDetailsDTO[]" required>
+  Line items for the transaction — quantity, unit, employee, supplier references, etc.
+</ParamField>
+
+<Note>
+  The `TrxPrefix` field drives downstream reporting and state-machine routing. Agree on prefix codes with your tenant configuration before creating transactions in production. A common example is **`PRDLBR`** for productivity-labor transactions, which records hours worked per employee against a specific herb variety.
+</Note>
+
+---
+
+#### `PATCH /api/v1/operations/{idTrxHeader}`
+
+Partially updates an existing transaction's details, products, attributes, or state. Only the supplied collections are updated; omitted collections are left unchanged.
+
+<ParamField path="idTrxHeader" type="long" required>
+  The numeric primary key of the `TrxHeader` record to update.
+</ParamField>
+
+<ParamField body="trxAttributes" type="TrxAttributesDTO[]">
+  Replacement attribute records. Supplying an empty array clears all attributes.
+</ParamField>
+
+<ParamField body="trxProducts" type="TrxProductsDTO[]">
+  Replacement product lines.
+</ParamField>
+
+<ParamField body="trxStates" type="TrxStatesDTO | null">
+  New state to apply to the transaction. `null` leaves the state unchanged.
+</ParamField>
+
+<ParamField body="trxDetails" type="TrxDetailsDTO[]">
+  Replacement detail lines.
+</ParamField>
+
+---
+
+#### `POST /api/v1/operations/getTrx`
+
+Searches and returns transactions matching the provided criteria. Accepts a `SearchTrx` body that can filter by prefix, date range, status, employee, supplier, or any combination thereof.
+
+<ParamField body="searchTrx" type="SearchTrx" required>
+  Filter object specifying the transaction query criteria.
+</ParamField>
+
+---
+
+### Integration Execution
+
+#### `POST /api/v1/integrations/exec-api`
+
+Executes a configured API rule by its `ShortName`. This endpoint is the runtime entry point for the integration engine: it looks up the rule definition (stored in GSMApplication), builds the outbound HTTP request, calls the configured endpoint, and returns the result.
+
+<ParamField body="genericApiDTO" type="GenericApiDTO" required>
+  Payload that identifies the API rule to execute and provides any additional runtime parameters needed by the rule.
+</ParamField>
+
+| Status | Condition |
+|---|---|
+| `200 OK` | Rule executed and response returned. |
+| `400 Bad Request` | Rule identifier is missing or payload is malformed. |
+| `401 Unauthorized` | Caller is not authenticated. |
+| `403 Forbidden` | Caller does not have permission to execute this rule. |
+| `404 Not Found` | Rule `ShortName` does not exist for the tenant. |
+| `409 Conflict` | Integration call succeeded but produced a conflict state. |
+| `500 Internal Server Error` | Unexpected error during rule execution. |
+
+## Transaction DTO Reference
+
+<Accordion title="TrxCreateDTO — full field list">
+  ```csharp
+  public sealed class TrxCreateDTO
+  {
+      public required string            TrxPrefix     { get; set; }
+      public          string            Descr         { get; set; } = string.Empty;
+      public required string            Username      { get; set; }
+      public          string?           Location      { get; set; }
+      public          List<TrxAttributesDTO> TrxAttributes { get; set; } = new();
+      public          List<TrxProductsDTO>   TrxProducts   { get; set; } = new();
+      public required TrxStatesDTO      TrxStates     { get; set; }
+      public required List<TrxDetailsDTO>    TrxDetails    { get; set; }
+  }
+  ```
+</Accordion>
+
+<Accordion title="TrxUpdateDTO — full field list">
+  ```csharp
+  public sealed class TrxUpdateDTO
+  {
+      public List<TrxAttributesDTO> TrxAttributes { get; set; } = new();
+      public List<TrxProductsDTO>   TrxProducts   { get; set; } = new();
+      public TrxStatesDTO?          TrxStates     { get; set; }
+      public List<TrxDetailsDTO>    TrxDetails    { get; set; } = new();
+  }
+  ```
+</Accordion>
+
+## Layer Structure
+
+GSMOperations follows the same layered architecture as all other GSM microservices:
+
+| Layer | Responsibility |
+|---|---|
+| `GSMOperations.Api` | HTTP controllers, Swagger, middleware pipeline |
+| `GSMOperations.Business` | Service implementations for all domain operations |
+| `GSMOperations.Abstractions` | Interfaces for DI/DIP across layers |
+| `GSMOperations.Entities` | DTOs, models, and search request objects |
+| `GSMOperations.DataAccess` | EF Core entities (`Employee`, `Supplier`, etc.) and DbContexts |
+| `GSMOperations.Infrastructure` | Repository implementations and external call handling |
+| `GSMOperations.Tenant` | `TenantContext`, tenant middleware, header/claim resolution |

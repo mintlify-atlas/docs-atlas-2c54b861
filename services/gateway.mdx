@@ -1,0 +1,185 @@
+---
+title: "GSM Gateway: JWT Validation and Tenant Routing Edge"
+sidebarTitle: "Gateway"
+description: "How the GSM Gateway uses YARP to validate JWT tokens, inject tenant identity headers, and route traffic to the correct downstream microservice cluster."
+---
+
+The GSM Gateway is the single entry point for all HTTP traffic in the GSM Application platform. Built on [YARP (Yet Another Reverse Proxy)](https://microsoft.github.io/reverse-proxy/) for .NET, it performs JWT validation at the network edge before any request reaches a microservice, and it is solely responsible for establishing the trusted `X-Company-Id` tenant identity header. No data access layer exists in the gateway by design — adding persistence would violate YAGNI and couple the routing layer to business concerns without any architectural benefit.
+
+## Responsibilities
+
+<CardGroup cols={2}>
+  <Card title="JWT Validation" icon="shield-check">
+    Validates every `Authorization: Bearer` token for signature, issuer, and audience. Invalid tokens are rejected with `401 Unauthorized` before the request is forwarded.
+  </Card>
+  <Card title="Tenant Header Injection" icon="tag">
+    Strips any client-supplied `X-Company-Id` and `X-Profile-Id` headers, then injects values derived directly from the validated JWT claims.
+  </Card>
+  <Card title="Reverse Proxy Routing" icon="arrows-split-up-and-left">
+    Routes requests to `gsmAuthCluster`, `gsmApplicationCluster`, or `gsmOperationsCluster` based on the URL prefix.
+  </Card>
+  <Card title="Authorization Policies" icon="lock">
+    Enforces the `AuthenticatedUser` policy on application and operations routes, while security routes remain anonymous to support login and tenant resolution.
+  </Card>
+</CardGroup>
+
+## Route Table
+
+The gateway's YARP route table is defined in `appsettings.json` under the `ReverseProxy` key. The table below summarizes every configured route:
+
+| Gateway Path | Cluster | Auth Policy | Forwarded As |
+|---|---|---|---|
+| `/api/security/{**catch-all}` | `gsmAuthCluster` | Anonymous | `/api/{catch-all}` |
+| `/swagger/security/{**catch-all}` | `gsmAuthCluster` | Anonymous | `/swagger/{catch-all}` |
+| `/api/application/{**catch-all}` | `gsmApplicationCluster` | `AuthenticatedUser` | `/api/{catch-all}` |
+| `/swagger/application/{**catch-all}` | `gsmApplicationCluster` | Anonymous | `/swagger/{catch-all}` |
+| `/api/operations/{**catch-all}` | `gsmOperationsCluster` | `AuthenticatedUser` | `/api/{catch-all}` |
+| `/swagger/operations/{**catch-all}` | `gsmOperationsCluster` | Anonymous | `/swagger/{catch-all}` |
+
+All routes apply a **PathRemovePrefix + PathPrefix** transform pair that strips the service-discriminator segment and re-adds `/api` or `/swagger`, keeping downstream service URLs uniform.
+
+<Note>
+  Swagger passthrough routes are intentionally anonymous so that developers can access each service's interactive API documentation in development without requiring a valid token.
+</Note>
+
+## Cluster Addresses
+
+Each cluster destination is configured with an address that the YARP engine forwards traffic to. In containerized deployments these values are supplied via environment variables rather than hardcoded in configuration:
+
+```json
+"Clusters": {
+  "gsmAuthCluster": {
+    "Destinations": {
+      "authDestination": { "Address": "http://172.17.0.1:8081/" }
+    }
+  },
+  "gsmApplicationCluster": {
+    "Destinations": {
+      "applicationDestination": { "Address": "http://172.17.0.1:8082/" }
+    }
+  },
+  "gsmOperationsCluster": {
+    "Destinations": {
+      "operationsDestination": { "Address": "http://172.17.0.1:8083/" }
+    }
+  }
+}
+```
+
+Override these values with environment variables at runtime using the standard .NET configuration key format, for example:
+
+```bash
+ReverseProxy__Clusters__gsmAuthCluster__Destinations__authDestination__Address=http://gsmauth:8081/
+ReverseProxy__Clusters__gsmApplicationCluster__Destinations__applicationDestination__Address=http://gsmapplication:8082/
+ReverseProxy__Clusters__gsmOperationsCluster__Destinations__operationsDestination__Address=http://gsmoperations:8083/
+```
+
+## JWT Validation Settings
+
+The gateway validates tokens produced by `GSMAuth`. The issuer and audience are configured in `appsettings.json` and should match the settings in the auth service exactly:
+
+```json
+"JwtSettings": {
+  "Issuer":   "GSMAuth",
+  "Audience": "GSMClients"
+}
+```
+
+Tokens signed with a different issuer or audience are rejected at the gateway with `401 Unauthorized` and never forwarded to downstream services.
+
+## Tenant Header Injection Middleware
+
+`TenantHeaderInjectionMiddleware` runs after JWT validation and before YARP proxies the request. Its logic guarantees that the only `X-Company-Id` value a microservice ever sees comes from a verified JWT, not from the client:
+
+```csharp
+// GSMGateway.Tenant/TenantHeaderInjectionMiddleware.cs
+public async Task InvokeAsync(
+    HttpContext context,
+    TenantContext tenantContext,
+    IGatewayTenantService gatewayTenantService)
+{
+    // Step 1 — strip any client-provided tenant headers
+    context.Request.Headers.Remove(TenantHeaderConstants.CompanyIdHeaderName); // "X-Company-Id"
+    context.Request.Headers.Remove(TenantHeaderConstants.ProfileIdHeaderName); // "X-Profile-Id"
+
+    // Step 2 — resolve companyId from the validated JWT claims
+    var companyId = gatewayTenantService.ResolveCompanyId(context.User);
+
+    if (!string.IsNullOrWhiteSpace(companyId))
+    {
+        tenantContext.CompanyId = companyId;
+        context.Request.Headers[TenantHeaderConstants.CompanyIdHeaderName] = companyId;
+    }
+
+    // Step 3 — inject profile id from the JWT idProfile claim
+    var idProfile = context.User.FindFirst("idProfile")?.Value;
+    if (!string.IsNullOrWhiteSpace(idProfile))
+        context.Request.Headers[TenantHeaderConstants.ProfileIdHeaderName] = idProfile;
+
+    await _next(context);
+}
+```
+
+The two header constant values are:
+
+```csharp
+public const string CompanyIdHeaderName = "X-Company-Id";
+public const string ProfileIdHeaderName = "X-Profile-Id";
+```
+
+<Warning>
+  Never skip the gateway and call a microservice directly in a production environment. Doing so would allow a caller to supply an arbitrary `X-Company-Id` header and access any tenant's data. The middleware's header-stripping step is the security boundary.
+</Warning>
+
+## Project Layer Structure
+
+The gateway solution follows the same layered pattern as the microservices, minus a DataAccess layer:
+
+<CardGroup cols={2}>
+  <Card title="GSMGateway.Api" icon="server">
+    HTTP hosting, YARP registration, Swagger aggregation, and middleware pipeline configuration.
+  </Card>
+  <Card title="GSMGateway.Business" icon="briefcase">
+    Application rules for resolving tenant identity from JWT claims.
+  </Card>
+  <Card title="GSMGateway.Abstractions" icon="file-contract">
+    Interfaces and contracts for dependency inversion across layers.
+  </Card>
+  <Card title="GSMGateway.Entities" icon="cube">
+    Constants, configuration option classes, and lightweight models.
+  </Card>
+  <Card title="GSMGateway.Tenant" icon="users">
+    `TenantContext` and `TenantHeaderInjectionMiddleware`.
+  </Card>
+  <Card title="GSMGateway.Infrastructure" icon="building">
+    Reads and extracts claims from the `ClaimsPrincipal` produced by JWT validation.
+  </Card>
+</CardGroup>
+
+## Health Endpoint
+
+```http
+GET /api/health
+```
+
+Returns a lightweight liveness response from the gateway itself. Use this endpoint in container orchestration health checks to determine whether the gateway process is running.
+
+## Multi-Tenant Flow Summary
+
+<Steps>
+  <Step title="User authenticates">
+    The client calls `POST /api/security/v1/auth/login` through the gateway. The security route is anonymous, so YARP forwards the request directly to `gsmAuthCluster` without JWT validation.
+  </Step>
+  <Step title="JWT is issued">
+    `GSMAuth` validates credentials, builds a JWT containing `sub`, `companyId`, and `idProfile` claims, and returns it to the client.
+  </Step>
+  <Step title="Client calls a protected route">
+    The client attaches `Authorization: Bearer <token>` to subsequent requests targeting `/api/application/**` or `/api/operations/**`.
+  </Step>
+  <Step title="Gateway validates token and injects headers">
+    The `AuthenticatedUser` policy confirms the token is valid, then `TenantHeaderInjectionMiddleware` strips client headers and injects `X-Company-Id` and `X-Profile-Id` from the JWT claims.
+  </Step>
+  <Step title="Microservice resolves tenant database">
+    The downstream microservice reads `X-Company-Id`, looks up the connection string in `TenantRegistryDb`, and opens a scoped `DbContext` against the correct tenant database.
+  </Step>
+</Steps>

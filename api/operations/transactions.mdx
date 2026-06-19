@@ -1,0 +1,516 @@
+---
+title: "Transaction Lifecycle Endpoints for GSM Operations"
+sidebarTitle: "Transactions"
+description: "Create, update, and search GSM Operations transactions with full support for attributes, products, states, and detail lines across the transaction lifecycle."
+---
+
+Transactions are the core operational record in the GSM Operations service. Each transaction is identified by a `TrxPrefix` that encodes the business context — for example, `PRDLBR` indicates a productivity-labor transaction. A transaction progresses through a defined lifecycle: it is initially **CREATED**, transitions to **INPROGRESS** when work begins, and is ultimately resolved as either **COMPLETED** or **CANCELLED**. State changes are recorded as entries in the `TrxStates` collection, providing a complete audit trail.
+
+Each transaction can carry arbitrary key/value attributes (`TrxAttributes`), associated product lines (`TrxProducts`), and typed detail lines (`TrxDetails`), making the structure flexible enough to represent diverse operational workflows without schema changes.
+
+---
+
+## Create Transaction
+
+Create a new transaction header with its initial state, attributes, products, and detail lines.
+
+### Endpoint
+
+```
+POST /api/operations/v1/operations/create-trx
+```
+
+### Authentication
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token. Format: `Bearer <token>`
+</ParamField>
+
+### Request Body
+
+<ParamField body="trxPrefix" type="string" required>
+  Business-type prefix that classifies the transaction. This value determines processing rules and reporting groupings. Example values: `PRDLBR` (productivity-labor), `RCVHB` (herb receipt), `DSPHB` (herb dispatch).
+</ParamField>
+
+<ParamField body="descr" type="string">
+  Optional free-text description for the transaction.
+</ParamField>
+
+<ParamField body="username" type="string" required>
+  Username of the operator creating the transaction. Used for audit trail purposes.
+</ParamField>
+
+<ParamField body="location" type="string">
+  Optional physical location or site identifier where the transaction originates.
+</ParamField>
+
+<ParamField body="trxAttributes" type="array">
+  Arbitrary key/value metadata attached to the transaction. Can be used to store custom attributes without modifying the schema.
+
+  <Expandable title="TrxAttributesDTO (each item)">
+    <ParamField body="attributeKey" type="string" required>
+      The attribute name or key.
+    </ParamField>
+
+    <ParamField body="attributeValue" type="string" required>
+      The attribute value as a string.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="trxProducts" type="array">
+  Product lines included in the transaction.
+
+  <Expandable title="TrxProductsDTO (each item)">
+    <ParamField body="idVariety" type="integer" required>
+      Reference to the product variety (from master products catalog).
+    </ParamField>
+
+    <ParamField body="varietyName" type="string">
+      Display name for the variety (denormalised for convenience).
+    </ParamField>
+
+    <ParamField body="sku" type="string">
+      SKU code for the variety.
+    </ParamField>
+
+    <ParamField body="qty" type="number">
+      Quantity of this variety involved in the transaction.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="trxStates" type="object" required>
+  The initial state record for the transaction.
+
+  <Expandable title="TrxStatesDTO">
+    <ParamField body="trxState" type="string" required>
+      The state value for this entry. Standard lifecycle states: `CREATED`, `INPROGRESS`, `COMPLETED`, `CANCELLED`.
+    </ParamField>
+
+    <ParamField body="comments" type="string">
+      Optional comment accompanying the state change.
+    </ParamField>
+
+    <ParamField body="stateDate" type="string (ISO 8601)">
+      Timestamp of the state. Defaults to the current UTC time if omitted.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="trxDetails" type="array" required>
+  Typed detail lines that carry the transaction's operational data.
+
+  <Expandable title="TrxDetailsDTO (each item)">
+    <ParamField body="detailType" type="string" required>
+      The category or type of this detail line (e.g. `"EMPLOYEE"`, `"NOTE"`, `"TASK"`).
+    </ParamField>
+
+    <ParamField body="detailValue" type="string">
+      The value or payload for this detail line.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Transaction created. `data` contains confirmation (typically the new `TrxDocument` identifier). |
+| `400 Bad Request` | Required fields missing or validation failed. |
+| `401 Unauthorized` | Token missing or invalid. |
+
+### Example
+
+```bash
+curl --request POST \
+  --url 'https://your-gateway.example.com/api/operations/v1/operations/create-trx' \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "trxPrefix": "PRDLBR",
+    "descr": "Morning harvest labor record",
+    "username": "jsmith",
+    "location": "Farm A - Block 3",
+    "trxAttributes": [
+      { "attributeKey": "SHIFT", "attributeValue": "MORNING" }
+    ],
+    "trxProducts": [
+      { "idVariety": 10, "varietyName": "Lavender Fine", "sku": "LAV-001-F", "qty": 25.5 }
+    ],
+    "trxStates": {
+      "trxState": "CREATED",
+      "comments": "Initial record",
+      "stateDate": "2024-06-01T07:00:00Z"
+    },
+    "trxDetails": [
+      { "detailType": "EMPLOYEE", "detailValue": "EMP-042" },
+      { "detailType": "NOTE", "detailValue": "Harvested from east quadrant." }
+    ]
+  }'
+```
+
+```json
+{
+  "success": true,
+  "message": "Transaction created successfully.",
+  "data": "PRDLBR-20240601-0001",
+  "errorType": null,
+  "traceId": "00-3c4d5e6f7a8b9c01-01",
+  "details": null
+}
+```
+
+---
+
+## Update Transaction
+
+Apply a partial update to an existing transaction. Only the collections provided in the body are updated; omitted collections remain unchanged.
+
+### Endpoint
+
+```
+PATCH /api/operations/v1/operations/{idTrxHeader}
+```
+
+### Path Parameters
+
+<ParamField path="idTrxHeader" type="integer (long)" required>
+  The numeric ID of the transaction header to update.
+</ParamField>
+
+### Request Body
+
+<ParamField body="trxAttributes" type="array">
+  Updated or additional key/value attribute lines.
+
+  <Expandable title="TrxAttributesDTO (each item)">
+    <ParamField body="attributeKey" type="string" required>
+      Attribute key to set or update.
+    </ParamField>
+
+    <ParamField body="attributeValue" type="string" required>
+      New attribute value.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="trxProducts" type="array">
+  Updated product lines.
+
+  <Expandable title="TrxProductsDTO (each item)">
+    <ParamField body="idVariety" type="integer" required>
+      Variety reference.
+    </ParamField>
+
+    <ParamField body="varietyName" type="string">
+      Variety display name.
+    </ParamField>
+
+    <ParamField body="sku" type="string">
+      SKU code.
+    </ParamField>
+
+    <ParamField body="qty" type="number">
+      Updated quantity.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="trxStates" type="object">
+  New state entry to append to the transaction's state history. Use this to advance the lifecycle (e.g. from `INPROGRESS` to `COMPLETED`).
+
+  <Expandable title="TrxStatesDTO">
+    <ParamField body="trxState" type="string" required>
+      New lifecycle state: `INPROGRESS`, `COMPLETED`, or `CANCELLED`.
+    </ParamField>
+
+    <ParamField body="comments" type="string">
+      Optional comment for this state transition.
+    </ParamField>
+
+    <ParamField body="stateDate" type="string (ISO 8601)">
+      Timestamp of the state change. Defaults to current UTC if omitted.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="trxDetails" type="array">
+  Updated or appended detail lines.
+
+  <Expandable title="TrxDetailsDTO (each item)">
+    <ParamField body="detailType" type="string" required>
+      Detail type identifier.
+    </ParamField>
+
+    <ParamField body="detailValue" type="string">
+      Detail value payload.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Transaction updated successfully. |
+| `400 Bad Request` | Validation failed (e.g. invalid state transition). |
+| `401 Unauthorized` | Token missing or invalid. |
+| `404 Not Found` | No transaction found with the given `idTrxHeader`. |
+
+### Example
+
+```bash
+curl --request PATCH \
+  --url 'https://your-gateway.example.com/api/operations/v1/operations/1001' \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "trxStates": {
+      "trxState": "COMPLETED",
+      "comments": "Harvest completed and verified.",
+      "stateDate": "2024-06-01T14:30:00Z"
+    }
+  }'
+```
+
+---
+
+## Search Transactions
+
+Search and retrieve transactions matching the specified filter criteria.
+
+### Endpoint
+
+```
+POST /api/operations/v1/operations/getTrx
+```
+
+### Authentication
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token. Format: `Bearer <token>`
+</ParamField>
+
+### Request Body
+
+<ParamField body="trxPrefix" type="string">
+  Filter by transaction type prefix (e.g. `"PRDLBR"`). Returns only transactions of this type.
+</ParamField>
+
+<ParamField body="status" type="string">
+  Filter by current transaction status. Standard values: `CREATED`, `INPROGRESS`, `COMPLETED`, `CANCELLED`.
+</ParamField>
+
+<ParamField body="location" type="string">
+  Filter by originating location.
+</ParamField>
+
+### Response
+
+<ResponseField name="data" type="array">
+  List of matching transaction records.
+
+  <Expandable title="TrxResponseDTO (each item)">
+    <ResponseField name="idTrxHeader" type="integer (long)" required>
+      Unique numeric ID of the transaction header.
+    </ResponseField>
+
+    <ResponseField name="trxPrefix" type="string" required>
+      Business-type prefix classifying the transaction.
+    </ResponseField>
+
+    <ResponseField name="trxDocument" type="string" required>
+      Auto-generated document number (e.g. `"PRDLBR-20240601-0001"`).
+    </ResponseField>
+
+    <ResponseField name="descr" type="string | null">
+      Transaction description.
+    </ResponseField>
+
+    <ResponseField name="trxDate" type="string (ISO 8601)" required>
+      Date and time the transaction was created.
+    </ResponseField>
+
+    <ResponseField name="status" type="string" required>
+      Current lifecycle status of the transaction.
+    </ResponseField>
+
+    <ResponseField name="username" type="string" required>
+      Username of the operator who created the transaction.
+    </ResponseField>
+
+    <ResponseField name="location" type="string | null">
+      Location associated with the transaction.
+    </ResponseField>
+
+    <ResponseField name="trxAttributes" type="array">
+      Key/value metadata lines attached to the transaction.
+
+      <Expandable title="TrxResponseAttributeDTO (each item)">
+        <ResponseField name="idTrxAttribute" type="integer (long)" required>
+          Unique ID of the attribute record.
+        </ResponseField>
+
+        <ResponseField name="attributeKey" type="string" required>
+          Attribute name.
+        </ResponseField>
+
+        <ResponseField name="attributeValue" type="string | null">
+          Attribute value.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+
+    <ResponseField name="trxProducts" type="array">
+      Product lines associated with the transaction.
+
+      <Expandable title="TrxResponseProductDTO (each item)">
+        <ResponseField name="idTrxProduct" type="integer (long)" required>
+          Unique ID of the product line record.
+        </ResponseField>
+
+        <ResponseField name="idVariety" type="integer" required>
+          Variety reference ID.
+        </ResponseField>
+
+        <ResponseField name="varietyName" type="string | null">
+          Variety display name.
+        </ResponseField>
+
+        <ResponseField name="sku" type="string | null">
+          SKU code.
+        </ResponseField>
+
+        <ResponseField name="qty" type="number | null">
+          Quantity.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+
+    <ResponseField name="trxStates" type="array">
+      Full state history for this transaction.
+
+      <Expandable title="TrxResponseStateDTO (each item)">
+        <ResponseField name="idTrxState" type="integer (long)" required>
+          Unique ID of the state entry.
+        </ResponseField>
+
+        <ResponseField name="trxState" type="string | null">
+          The state value at this point in the history.
+        </ResponseField>
+
+        <ResponseField name="stateDate" type="string (ISO 8601) | null">
+          Timestamp when this state was recorded.
+        </ResponseField>
+
+        <ResponseField name="comments" type="string | null">
+          Comment associated with this state transition.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+
+    <ResponseField name="trxDetails" type="array">
+      Typed detail lines for this transaction.
+
+      <Expandable title="TrxResponseDetailDTO (each item)">
+        <ResponseField name="idTrxDetail" type="integer (long)" required>
+          Unique ID of the detail record.
+        </ResponseField>
+
+        <ResponseField name="detailType" type="string" required>
+          Type identifier for this detail line.
+        </ResponseField>
+
+        <ResponseField name="detailValue" type="string | null">
+          Value or payload of this detail line.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Transactions returned (may be empty list). |
+| `400 Bad Request` | Invalid search criteria. |
+| `401 Unauthorized` | Token missing or invalid. |
+
+### Example
+
+```bash
+curl --request POST \
+  --url 'https://your-gateway.example.com/api/operations/v1/operations/getTrx' \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "trxPrefix": "PRDLBR",
+    "status": "COMPLETED",
+    "location": "Farm A - Block 3"
+  }'
+```
+
+```json
+{
+  "success": true,
+  "message": "Transactions retrieved.",
+  "data": [
+    {
+      "idTrxHeader": 1001,
+      "trxPrefix": "PRDLBR",
+      "trxDocument": "PRDLBR-20240601-0001",
+      "descr": "Morning harvest labor record",
+      "trxDate": "2024-06-01T07:00:00Z",
+      "status": "COMPLETED",
+      "username": "jsmith",
+      "location": "Farm A - Block 3",
+      "trxAttributes": [
+        { "idTrxAttribute": 1, "attributeKey": "SHIFT", "attributeValue": "MORNING" }
+      ],
+      "trxProducts": [
+        { "idTrxProduct": 1, "idVariety": 10, "varietyName": "Lavender Fine", "sku": "LAV-001-F", "qty": 25.5 }
+      ],
+      "trxStates": [
+        { "idTrxState": 1, "trxState": "CREATED", "stateDate": "2024-06-01T07:00:00Z", "comments": "Initial record" },
+        { "idTrxState": 2, "trxState": "COMPLETED", "stateDate": "2024-06-01T14:30:00Z", "comments": "Harvest completed and verified." }
+      ],
+      "trxDetails": [
+        { "idTrxDetail": 1, "detailType": "EMPLOYEE", "detailValue": "EMP-042" }
+      ]
+    }
+  ],
+  "errorType": null,
+  "traceId": null,
+  "details": null
+}
+```
+
+---
+
+## Transaction Lifecycle
+
+Transactions follow a linear state machine. State transitions are appended to the `trxStates` collection — the current status of the transaction is always the most recently recorded state.
+
+```
+CREATED → INPROGRESS → COMPLETED
+                    ↘ CANCELLED
+```
+
+| State | Description |
+|-------|-------------|
+| `CREATED` | Transaction has been recorded but work has not started. |
+| `INPROGRESS` | Work is actively under way. |
+| `COMPLETED` | Work finished successfully and the transaction is closed. |
+| `CANCELLED` | Transaction was abandoned before completion. |
+
+## TrxPrefix Convention
+
+The `trxPrefix` value encodes the business type of the transaction. Prefixes are configured per tenant and drive processing rules, reporting, and integrations. Common examples:
+
+| Prefix | Description |
+|--------|-------------|
+| `PRDLBR` | Productivity — labor-based harvest recording |
+| `RCVHB` | Receipt of herb inventory |
+| `DSPHB` | Dispatch of herb inventory |

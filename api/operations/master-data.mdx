@@ -1,0 +1,489 @@
+---
+title: "Master Data Endpoints for GSM Operations Service"
+sidebarTitle: "Master Data"
+description: "Access global parameters, herb product catalogs, employee and supplier directories, product categories, and SKU definitions from the GSM Operations service."
+---
+
+The master data endpoints provide read-only access to the foundational reference tables that drive the GSM Operations workflows. These include global and parameterised configuration attributes, the master herb/product catalog with variety breakdowns, employee and supplier directories (both supporting optional filter criteria in the request body), the hierarchical product category tree, and SKU definitions. All endpoints are scoped to the authenticated user's tenant via the gateway-injected `X-Company-Id` header.
+
+---
+
+## Get Global Parameters
+
+Retrieve all global and parameterised attribute configurations for the current tenant.
+
+### Endpoint
+
+```
+GET /api/operations/v1/operations/parameters
+```
+
+### Authentication
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token. Format: `Bearer <token>`
+</ParamField>
+
+### Response
+
+<ResponseField name="data" type="array">
+  List of global parameter objects.
+
+  <Expandable title="GlobalParameterDTO (each item)">
+    <ResponseField name="idParameter" type="integer" required>
+      Auto-generated primary key for the parameter group.
+    </ResponseField>
+
+    <ResponseField name="paramCategory" type="string" required>
+      Category grouping this parameter belongs to (e.g. `"UNITS"`, `"STATUS_CODES"`).
+    </ResponseField>
+
+    <ResponseField name="shortName" type="string | null">
+      Short code identifier for the parameter group.
+    </ResponseField>
+
+    <ResponseField name="descr" type="string | null">
+      Human-readable description of the parameter group.
+    </ResponseField>
+
+    <ResponseField name="paramAttributes" type="array">
+      List of attribute values under this parameter group.
+
+      <Expandable title="ParamAttributeDTO (each item)">
+        <ResponseField name="shortName" type="string | null">
+          Short code for the attribute (e.g. `"KG"`, `"LB"`).
+        </ResponseField>
+
+        <ResponseField name="code" type="string | null">
+          Machine-readable code for the attribute.
+        </ResponseField>
+
+        <ResponseField name="descr" type="string | null">
+          Human-readable description of the attribute value.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Parameters returned. |
+| `401 Unauthorized` | Token missing or invalid. |
+| `404 Not Found` | No parameters found for the tenant. |
+
+### Example
+
+```bash
+curl --request GET \
+  --url 'https://your-gateway.example.com/api/operations/v1/operations/parameters' \
+  --header 'Authorization: Bearer <token>'
+```
+
+```json
+{
+  "success": true,
+  "message": "Parameters retrieved successfully.",
+  "data": [
+    {
+      "idParameter": 1,
+      "paramCategory": "MEASUREMENT_UNITS",
+      "shortName": "WEIGHT",
+      "descr": "Weight measurement units",
+      "paramAttributes": [
+        { "shortName": "KG", "code": "KG", "descr": "Kilograms" },
+        { "shortName": "GR", "code": "GR", "descr": "Grams" }
+      ]
+    }
+  ],
+  "errorType": null,
+  "traceId": null,
+  "details": null
+}
+```
+
+---
+
+## Get Master Products
+
+Retrieve the full herb and product catalog, including product varieties.
+
+### Endpoint
+
+```
+GET /api/operations/v1/operations/master-products
+```
+
+### Authentication
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token. Format: `Bearer <token>`
+</ParamField>
+
+### Response
+
+<ResponseField name="data" type="array">
+  List of master product entries.
+
+  <Expandable title="MasterProductDTO (each item)">
+    <ResponseField name="masterProductName" type="string | null">
+      Full name of the herb or product (e.g. `"Lavender"`).
+    </ResponseField>
+
+    <ResponseField name="sku" type="string | null">
+      Stock Keeping Unit code for the base product.
+    </ResponseField>
+
+    <ResponseField name="measurementUnit" type="string | null">
+      Default unit of measurement (e.g. `"KG"`, `"GR"`).
+    </ResponseField>
+
+    <ResponseField name="measurementUnitValue" type="number | null">
+      Numeric conversion factor or standard quantity for the measurement unit.
+    </ResponseField>
+
+    <ResponseField name="mv" type="array | null">
+      List of product varieties associated with this master product.
+
+      <Expandable title="MasterVarietyDTO (each item)">
+        <ResponseField name="idVariety" type="integer | null">
+          Unique identifier for the variety.
+        </ResponseField>
+
+        <ResponseField name="name" type="string | null">
+          Display name of the variety.
+        </ResponseField>
+
+        <ResponseField name="qty" type="number | null">
+          Standard quantity associated with this variety.
+        </ResponseField>
+
+        <ResponseField name="isActive" type="boolean | null">
+          Whether this variety is currently active and available for use in transactions.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Products returned. |
+| `401 Unauthorized` | Token missing or invalid. |
+| `404 Not Found` | No products found for the tenant. |
+
+### Example
+
+```bash
+curl --request GET \
+  --url 'https://your-gateway.example.com/api/operations/v1/operations/master-products' \
+  --header 'Authorization: Bearer <token>'
+```
+
+```json
+{
+  "success": true,
+  "message": "Master products retrieved.",
+  "data": [
+    {
+      "masterProductName": "Lavender",
+      "sku": "LAV-001",
+      "measurementUnit": "KG",
+      "measurementUnitValue": 1.0,
+      "mv": [
+        { "idVariety": 10, "name": "Lavender Fine", "qty": 1.0, "isActive": true },
+        { "idVariety": 11, "name": "Lavender Gross", "qty": 1.0, "isActive": true }
+      ]
+    }
+  ],
+  "errorType": null,
+  "traceId": null,
+  "details": null
+}
+```
+
+---
+
+## Get Filtered Employees
+
+Retrieve the employee directory with optional filtering criteria supplied in the request body. All filter fields are optional — omitting the body or sending `{}` returns all employees.
+
+### Endpoint
+
+```
+GET /api/operations/v1/operations/filtered-employees
+```
+
+### Authentication
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token. Format: `Bearer <token>`
+</ParamField>
+
+### Request Body (optional)
+
+<ParamField body="fullName" type="string">
+  Filter by full name (partial match supported).
+</ParamField>
+
+<ParamField body="location" type="string">
+  Filter by the employee's assigned location.
+</ParamField>
+
+### Response
+
+<ResponseField name="data" type="array">
+  List of employee records matching the filter criteria.
+
+  <Expandable title="EmployeeDTO (each item)">
+    <ResponseField name="idEmployee" type="integer" required>
+      Unique numeric identifier for the employee.
+    </ResponseField>
+
+    <ResponseField name="fullName" type="string" required>
+      Employee's full display name.
+    </ResponseField>
+
+    <ResponseField name="location" type="string | null">
+      Location or site the employee is assigned to.
+    </ResponseField>
+
+    <ResponseField name="contactNumber" type="string | null">
+      Employee's phone or contact number.
+    </ResponseField>
+
+    <ResponseField name="email" type="string | null">
+      Employee's email address.
+    </ResponseField>
+
+    <ResponseField name="isActive" type="boolean" required>
+      Whether the employee is currently active.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Employees returned (may be empty list). |
+| `401 Unauthorized` | Token missing or invalid. |
+
+### Example
+
+```bash
+curl --request GET \
+  --url 'https://your-gateway.example.com/api/operations/v1/operations/filtered-employees' \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "fullName": "Maria",
+    "location": "Farm A"
+  }'
+```
+
+---
+
+## Get Filtered Suppliers
+
+Retrieve the supplier directory with optional filtering criteria supplied in the request body. All filter fields are optional.
+
+### Endpoint
+
+```
+GET /api/operations/v1/operations/filtered-suppliers
+```
+
+### Authentication
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token. Format: `Bearer <token>`
+</ParamField>
+
+### Request Body (optional)
+
+<ParamField body="nameSupplier" type="string">
+  Filter by supplier name (partial match supported).
+</ParamField>
+
+<ParamField body="categorySupplier" type="string">
+  Filter by the supplier's category classification.
+</ParamField>
+
+<ParamField body="region" type="string">
+  Filter by region.
+</ParamField>
+
+<ParamField body="country" type="string">
+  Filter by country code or name.
+</ParamField>
+
+### Response
+
+<ResponseField name="data" type="array">
+  List of supplier records matching the filter criteria.
+
+  <Expandable title="SupplierDTO (each item)">
+    <ResponseField name="idSupplier" type="string (GUID)" required>
+      Universally unique identifier for the supplier.
+    </ResponseField>
+
+    <ResponseField name="idThirdSupplier" type="string" required>
+      External or third-party reference ID for the supplier.
+    </ResponseField>
+
+    <ResponseField name="nameSupplier" type="string" required>
+      Supplier's display name.
+    </ResponseField>
+
+    <ResponseField name="categorySupplier" type="string" required>
+      Classification category of the supplier.
+    </ResponseField>
+
+    <ResponseField name="region" type="string | null">
+      Geographic region of the supplier.
+    </ResponseField>
+
+    <ResponseField name="country" type="string | null">
+      Country where the supplier operates.
+    </ResponseField>
+
+    <ResponseField name="contact" type="string | null">
+      Primary contact information for the supplier.
+    </ResponseField>
+
+    <ResponseField name="isActive" type="boolean" required>
+      Whether the supplier is currently active.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Suppliers returned (may be empty list). |
+| `401 Unauthorized` | Token missing or invalid. |
+
+### Example
+
+```bash
+curl --request GET \
+  --url 'https://your-gateway.example.com/api/operations/v1/operations/filtered-suppliers' \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "categorySupplier": "HERB",
+    "country": "France"
+  }'
+```
+
+---
+
+## Get Categories
+
+Retrieve the hierarchical product category tree used for classifying SKUs and transactions.
+
+### Endpoint
+
+```
+GET /api/operations/v1/operations/categories
+```
+
+### Authentication
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token. Format: `Bearer <token>`
+</ParamField>
+
+### Response
+
+<ResponseField name="data" type="array">
+  List of top-level category nodes. Each category may contain nested `children`.
+
+  <Expandable title="CategoryDTO (each item, recursive)">
+    <ResponseField name="idCategory" type="integer" required>
+      Unique identifier for the category node.
+    </ResponseField>
+
+    <ResponseField name="descr" type="string" required>
+      Human-readable description or label for the category.
+    </ResponseField>
+
+    <ResponseField name="code" type="string" required>
+      Short code for the category (e.g. `"FLWR"`).
+    </ResponseField>
+
+    <ResponseField name="aggregatedCode" type="string" required>
+      Full dot-separated or slash-separated path code representing the category's position in the hierarchy.
+    </ResponseField>
+
+    <ResponseField name="isSKU" type="boolean" required>
+      When `true`, this category node represents an SKU-level leaf in the hierarchy.
+    </ResponseField>
+
+    <ResponseField name="idSKUTemplate" type="integer" required>
+      Reference to the SKU template applied to items in this category.
+    </ResponseField>
+
+    <ResponseField name="children" type="array | null">
+      Nested child category nodes. Recursively structured as `CategoryDTO`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Categories returned. |
+| `401 Unauthorized` | Token missing or invalid. |
+
+### Example
+
+```bash
+curl --request GET \
+  --url 'https://your-gateway.example.com/api/operations/v1/operations/categories' \
+  --header 'Authorization: Bearer <token>'
+```
+
+---
+
+## Get SKU Definitions
+
+Retrieve the SKU definition templates that govern how SKUs are structured and validated.
+
+### Endpoint
+
+```
+GET /api/operations/v1/operations/sku-definitions
+```
+
+### Authentication
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token. Format: `Bearer <token>`
+</ParamField>
+
+### Response
+
+Returns `ApiResponse<object>` — the structure of the `data` field is determined by the SKU definition templates configured for the tenant. The response is a flexible payload representing all active SKU definition records.
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | SKU definitions returned. |
+| `401 Unauthorized` | Token missing or invalid. |
+
+### Example
+
+```bash
+curl --request GET \
+  --url 'https://your-gateway.example.com/api/operations/v1/operations/sku-definitions' \
+  --header 'Authorization: Bearer <token>'
+```

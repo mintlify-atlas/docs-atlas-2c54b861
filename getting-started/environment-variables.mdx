@@ -1,0 +1,169 @@
+---
+title: "Environment Variables Reference for All GSM Services"
+sidebarTitle: "Environment Variables"
+description: "Complete reference for every environment variable consumed by the gateway, gsmauth, gsmapplication, gsmoperations, and the React frontend across all deployment environments."
+---
+
+GSM Application uses environment variables as the single configuration surface for secrets, connection strings, and service-discovery addresses. Variables are injected at container start time from the root `.env` file (for Docker Compose deployments) or from the CI/CD environment secrets (for cloud deployments). Build-time variables for the React frontend are baked into the compiled bundle by Vite and cannot be changed without rebuilding the image.
+
+<Warning>
+  `JWT_SECRET` must be **identical** in the `gateway`, `gsmauth`, `gsmapplication`, and `gsmoperations` services. If any service uses a different value, JWT validation will fail with `401 Unauthorized` for requests routed to that service. There is no runtime error at startup — the mismatch only manifests on the first authenticated request.
+</Warning>
+
+## Shared Secrets
+
+These variables are consumed by multiple services and must have the same value in each.
+
+<ParamField body="JWT_SECRET" type="string" required>
+  Shared HMAC signing secret used to sign and validate JWTs. Must be identical across `gateway`, `gsmauth`, `gsmapplication`, and `gsmoperations`. Use a cryptographically random string of at least 32 characters.
+
+  **Default (insecure placeholder):** `gsm-auth-secret-key-change-in-production-2026`
+
+  **Example:**
+  ```ini
+  JWT_SECRET=s3cur3-gsm-jwt-s3cr3t-key-change-this-2026!
+  ```
+</ParamField>
+
+<ParamField body="DB_MASTER_URL" type="string" required>
+  ADO.NET connection string for the central `TenantRegistryDb` SQL Server database. Used by `gsmauth`, `gsmapplication`, and `gsmoperations` to look up per-tenant connection details. The `Database` field should be `TenantRegistryDb`.
+
+  **Format:** `Server=<host>;User ID=<user>;Password=<password>;Database=TenantRegistryDb;TrustServerCertificate=True`
+
+  **Example:**
+  ```ini
+  DB_MASTER_URL=Server=192.168.1.50,1433;User ID=sa;Password=MyP@ss!;Database=TenantRegistryDb;TrustServerCertificate=True
+  ```
+
+  <Note>
+    `TrustServerCertificate=True` is required when the SQL Server instance uses a self-signed TLS certificate. For production deployments with a CA-signed certificate, you can omit this flag or set it to `False`.
+  </Note>
+</ParamField>
+
+## JWT Settings
+
+These variables configure the JWT token parameters. They are set per-service in `docker-compose.yml` and match the `JwtSettings` section of each service's `appsettings.json`.
+
+<ParamField body="JwtSettings__Issuer" type="string">
+  The `iss` claim written into every JWT by `gsmauth` and validated by all services. The double-underscore (`__`) is the ASP.NET Core convention for nested configuration keys.
+
+  **Default:** `GSMAuth`
+
+  **Example:**
+  ```ini
+  JwtSettings__Issuer=GSMAuth
+  ```
+</ParamField>
+
+<ParamField body="JwtSettings__Audience" type="string">
+  The `aud` claim written into every JWT and validated by all services.
+
+  **Default:** `GSMClients`
+
+  **Example:**
+  ```ini
+  JwtSettings__Audience=GSMClients
+  ```
+</ParamField>
+
+<ParamField body="JwtSettings__ExpirationMinutes" type="integer">
+  Token lifetime in minutes from the moment of issuance. After expiry, the gateway will reject requests with `401 Unauthorized` and the client must re-authenticate.
+
+  **Default:** `240` (4 hours)
+
+  **Example:**
+  ```ini
+  JwtSettings__ExpirationMinutes=240
+  ```
+</ParamField>
+
+## ASP.NET Core Runtime Settings
+
+<ParamField body="ASPNETCORE_ENVIRONMENT" type="string">
+  Controls the ASP.NET Core runtime behaviour. Use `Production` for deployed environments (disables detailed error pages, enables performance optimisations) and `Development` for local debugging (enables Swagger UI, detailed exceptions).
+
+  **Allowed values:** `Production`, `Development`, `Staging`
+
+  **Default in docker-compose.yml:** `Production`
+</ParamField>
+
+<ParamField body="ASPNETCORE_URLS" type="string">
+  The HTTP listen address for each ASP.NET Core service. The `+` wildcard binds to all network interfaces inside the container.
+
+  | Service | Value |
+  |---|---|
+  | `gateway` | `http://+:80` |
+  | `gsmauth` | `http://+:8081` |
+  | `gsmapplication` | `http://+:8082` |
+  | `gsmoperations` | `http://+:8083` |
+
+  **Example:**
+  ```ini
+  ASPNETCORE_URLS=http://+:8081
+  ```
+</ParamField>
+
+## Frontend Build Variables
+
+These variables are resolved by Vite at image build time and embedded in the compiled JavaScript bundle. Changing them requires rebuilding the `frontend` Docker image.
+
+<ParamField body="VITE_TENANT_DEFAULT" type="string">
+  The `CompanyId` pre-filled in the tenant field on the login page. Useful for single-tenant deployments or demo environments where users should not need to know their company code.
+
+  **Default:** `IH001`
+
+  **Example:**
+  ```ini
+  VITE_TENANT_DEFAULT=IH001
+  ```
+</ParamField>
+
+<ParamField body="VITE_TENANT_IDS" type="string">
+  Comma-separated list of all valid `CompanyId` values known to the frontend. Used to populate tenant selection dropdowns and validate user input before making an API call.
+
+  **Default:** `IH001,AG001`
+
+  **Example:**
+  ```ini
+  VITE_TENANT_IDS=IH001,AG001,GSM001
+  ```
+</ParamField>
+
+## YARP Cluster Destination Addresses
+
+The gateway uses YARP's environment variable override pattern to configure the addresses of downstream microservice clusters at runtime. These override the values in `appsettings.json` and follow the ASP.NET Core hierarchical key syntax with `__` as the section separator.
+
+<ParamField body="ReverseProxy__Clusters__gsmAuthCluster__Destinations__authDestination__Address" type="string">
+  Full base URL of the `gsmauth` microservice as reachable from the gateway container. In Docker Compose, this is the Docker service name and internal port.
+
+  **Docker Compose value:** `http://gsmauth:8081/`
+</ParamField>
+
+<ParamField body="ReverseProxy__Clusters__gsmApplicationCluster__Destinations__applicationDestination__Address" type="string">
+  Full base URL of the `gsmapplication` microservice as reachable from the gateway container.
+
+  **Docker Compose value:** `http://gsmapplication:8082/`
+</ParamField>
+
+<ParamField body="ReverseProxy__Clusters__gsmOperationsCluster__Destinations__operationsDestination__Address" type="string">
+  Full base URL of the `gsmoperations` microservice as reachable from the gateway container.
+
+  **Docker Compose value:** `http://gsmoperations:8083/`
+</ParamField>
+
+## Summary Table
+
+The following table shows which variables are required by each service:
+
+| Variable | `gateway` | `gsmauth` | `gsmapplication` | `gsmoperations` | `frontend` |
+|---|:---:|:---:|:---:|:---:|:---:|
+| `JWT_SECRET` | ✅ | ✅ | ✅ | ✅ | — |
+| `DB_MASTER_URL` | — | ✅ | ✅ | ✅ | — |
+| `JwtSettings__Issuer` | ✅ | ✅ | ✅ | ✅ | — |
+| `JwtSettings__Audience` | ✅ | ✅ | ✅ | ✅ | — |
+| `JwtSettings__ExpirationMinutes` | — | ✅ | — | — | — |
+| `ASPNETCORE_ENVIRONMENT` | ✅ | ✅ | ✅ | ✅ | — |
+| `ASPNETCORE_URLS` | ✅ | ✅ | ✅ | ✅ | — |
+| `ReverseProxy__Clusters__*` | ✅ | — | — | — | — |
+| `VITE_TENANT_DEFAULT` | — | — | — | — | ✅ (build) |
+| `VITE_TENANT_IDS` | — | — | — | — | ✅ (build) |

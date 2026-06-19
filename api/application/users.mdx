@@ -1,0 +1,154 @@
+---
+title: "Update User Password in GSM Application"
+sidebarTitle: "Users"
+description: "Change the password for a specific GSM Application user by providing their current password for verification alongside the desired new password."
+---
+
+The Users API allows management of user accounts within the GSM Application. Currently, the primary mutation available to clients is updating a user's password. The request requires both the current password (for verification) and the desired new password. The `idUser` is a GUID path parameter that uniquely identifies the target user across all tenants.
+
+## Endpoint
+
+```
+PUT /api/application/v1/users/{idUser}/password
+```
+
+## Authentication
+
+All requests to this endpoint require a valid Bearer token. The token can be supplied as an `Authorization` header or as the `gsm_token` cookie.
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token obtained during login. Format: `Bearer <token>`
+</ParamField>
+
+> **Note:** The API gateway automatically injects the `X-Company-Id` header from the authenticated session. Clients must never set this header directly.
+
+## Path Parameters
+
+<ParamField path="idUser" type="string" required>
+  The GUID of the user whose password should be updated. Must be a valid UUID format (e.g. `3fa85f64-5717-4562-b3fc-2c963f66afa6`).
+</ParamField>
+
+## Request Body
+
+The request body must be a JSON object containing the user's current and new passwords.
+
+<ParamField body="oldPassword" type="string" required>
+  The user's current password. This is verified before any change is applied. The request fails if the current password does not match.
+</ParamField>
+
+<ParamField body="newPassword" type="string" required>
+  The desired new password. Password policy (minimum length, complexity) is enforced server-side.
+</ParamField>
+
+### Example Request Body
+
+```json
+{
+  "oldPassword": "CurrentP@ssw0rd!",
+  "newPassword": "NewSecureP@ss42!"
+}
+```
+
+## Response
+
+All responses are wrapped in the standard `ApiResponse<T>` envelope:
+
+```json
+{
+  "success": true | false,
+  "message": "string",
+  "data": null,
+  "errorType": "string" | null,
+  "traceId": "string" | null,
+  "details": "string" | null
+}
+```
+
+### Response Fields
+
+<ResponseField name="success" type="boolean" required>
+  `true` if the password was successfully updated; `false` otherwise.
+</ResponseField>
+
+<ResponseField name="message" type="string" required>
+  Human-readable status message. On failure, describes the reason (e.g. current password mismatch, user not found).
+</ResponseField>
+
+<ResponseField name="data" type="null">
+  This endpoint does not return a data payload on success.
+</ResponseField>
+
+<ResponseField name="errorType" type="string | null">
+  Present when `success` is `false`. Common values: `Validation`, `NotFound`, `Unauthorized`.
+</ResponseField>
+
+<ResponseField name="traceId" type="string | null">
+  Optional correlation ID for request tracing across services.
+</ResponseField>
+
+<ResponseField name="details" type="string | null">
+  Optional extended error detail message.
+</ResponseField>
+
+## HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Request processed. Check `success` in the response body — the operation result (success or validation error) is always communicated in the body. |
+| `400 Bad Request` | The request body is malformed or required fields are missing. |
+| `401 Unauthorized` | The Bearer token is missing, expired, or invalid. |
+| `404 Not Found` | No user with the given `idUser` GUID exists. |
+
+## Example
+
+### Request
+
+```bash
+curl --request PUT \
+  --url 'https://your-gateway.example.com/api/application/v1/users/3fa85f64-5717-4562-b3fc-2c963f66afa6/password' \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "oldPassword": "CurrentP@ssw0rd!",
+    "newPassword": "NewSecureP@ss42!"
+  }'
+```
+
+### Successful Response
+
+```json
+{
+  "success": true,
+  "message": "Password updated successfully.",
+  "data": null,
+  "errorType": null,
+  "traceId": "00-9e1f3a4c2d7b8e06-01",
+  "details": null
+}
+```
+
+### Error — Current Password Mismatch
+
+```json
+{
+  "success": false,
+  "message": "The current password provided is incorrect.",
+  "data": null,
+  "errorType": "Validation",
+  "traceId": "00-9e1f3a4c2d7b8e06-02",
+  "details": null
+}
+```
+
+### Error — User Not Found
+
+```json
+{
+  "success": false,
+  "message": "User not found.",
+  "data": null,
+  "errorType": "NotFound",
+  "traceId": "00-9e1f3a4c2d7b8e06-03",
+  "details": null
+}
+```

@@ -1,0 +1,185 @@
+---
+title: "GSM Application System Architecture and Request Flow"
+sidebarTitle: "Architecture"
+description: "A deep dive into the five-container Docker topology, YARP routing rules, JWT tenant claim propagation, and the database-per-tenant registry pattern."
+---
+
+GSM Application runs as five Docker containers connected over a private bridge network named `gsm-network`. No container is directly exposed to the public internet except the gateway (port 80) and the frontend (port 3000). All inter-service traffic travels over the internal network using Docker service names as hostnames, so `gsmauth`, `gsmapplication`, and `gsmoperations` are never reachable from outside the Docker host.
+
+## Container Topology
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                      gsm-network                         │
+│                                                          │
+│   ┌─────────────┐     ┌──────────────────────────────┐  │
+│   │  frontend   │     │          gateway             │  │
+│   │  React SPA  │────▶│  YARP  ·  JWT middleware     │  │
+│   │  :3000→:80  │     │  :80                         │  │
+│   └─────────────┘     └────────────┬─────────────────┘  │
+│                                    │                     │
+│              ┌─────────────────────┼──────────────┐      │
+│              ▼                     ▼              ▼      │
+│        ┌──────────┐        ┌────────────┐  ┌──────────┐ │
+│        │ gsmauth  │        │gsmapplicat.│  │gsmoperat.│ │
+│        │  :8081   │        │   :8082    │  │  :8083   │ │
+│        └──────────┘        └────────────┘  └──────────┘ │
+│              │                     │              │      │
+│              └──────────┬──────────┘              │      │
+│                         ▼                         │      │
+│                  ┌─────────────┐                  │      │
+│                  │TenantRegistry│◀─────────────────┘      │
+│                  │    Db        │                         │
+│                  └─────────────┘                         │
+└──────────────────────────────────────────────────────────┘
+```
+
+| Service | Docker name | Internal port | Public port |
+|---|---|---|---|
+| React SPA (Vite + React 19) | `frontend` | 80 | 3000 |
+| YARP API Gateway | `gateway` | 80 | 80 |
+| Authentication microservice | `gsmauth` | 8081 | — |
+| Application metadata microservice | `gsmapplication` | 8082 | — |
+| Operations microservice | `gsmoperations` | 8083 | — |
+
+## YARP Route Table
+
+The gateway's `appsettings.json` defines six YARP routes — one API route and one Swagger JSON proxy per downstream cluster. The URL path prefix determines which cluster receives the request.
+
+| Route | Path match | Cluster | Auth policy | Path transform |
+|---|---|---|---|---|
+| `gsmAuthApi` | `/api/security/{**catch-all}` | `gsmAuthCluster` | `anonymous` | Remove `/api/security`, prepend `/api` |
+| `gsmApplicationApi` | `/api/application/{**catch-all}` | `gsmApplicationCluster` | `AuthenticatedUser` | Remove `/api/application`, prepend `/api` |
+| `gsmOperationsApi` | `/api/operations/{**catch-all}` | `gsmOperationsCluster` | `AuthenticatedUser` | Remove `/api/operations`, prepend `/api` |
+| `gsmAuthSwaggerJson` | `/swagger/security/{**catch-all}` | `gsmAuthCluster` | `anonymous` | Remove `/swagger/security`, prepend `/swagger` |
+| `gsmApplicationSwaggerJson` | `/swagger/application/{**catch-all}` | `gsmApplicationCluster` | `anonymous` | Remove `/swagger/application`, prepend `/swagger` |
+| `gsmOperationsSwaggerJson` | `/swagger/operations/{**catch-all}` | `gsmOperationsCluster` | `anonymous` | Remove `/swagger/operations`, prepend `/swagger` |
+
+<Info>
+  The `anonymous` auth policy on the `/api/security/**` routes is intentional — the login endpoint must be reachable before a token exists. All other API routes require a valid JWT (`AuthenticatedUser` policy).
+</Info>
+
+The cluster destination addresses are injected at runtime via environment variables, overriding the file-based defaults:
+
+```json
+"Clusters": {
+  "gsmAuthCluster": {
+    "Destinations": {
+      "authDestination": { "Address": "http://172.17.0.1:8081/" }
+    }
+  },
+  "gsmApplicationCluster": {
+    "Destinations": {
+      "applicationDestination": { "Address": "http://172.17.0.1:8082/" }
+    }
+  },
+  "gsmOperationsCluster": {
+    "Destinations": {
+      "operationsDestination": { "Address": "http://172.17.0.1:8083/" }
+    }
+  }
+}
+```
+
+In Docker Compose, these are overridden with the service-name–based addresses (`http://gsmauth:8081/`, etc.) via the `ReverseProxy__Clusters__*` environment variables.
+
+## JWT and Tenant Propagation Flow
+
+Authentication and tenant resolution happen in a strict sequence. Understanding this flow is essential for debugging multi-tenant issues or adding new microservices.
+
+```
+Client                  Gateway               gsmauth            gsmapplication / gsmoperations
+  │                        │                     │                          │
+  │── POST /api/security ──▶│                     │                          │
+  │   /v1/auth/login        │── forward (anon) ──▶│                          │
+  │                         │                     │── lookup TenantRegistryDb│
+  │                         │                     │── connect tenant DB      │
+  │                         │                     │── verify credentials     │
+  │                         │◀── JWT { companyId }│                          │
+  │◀── 200 { token } ───────│                     │                          │
+  │                         │                     │                          │
+  │── GET /api/application ─▶│                     │                          │
+  │   Authorization: Bearer  │                     │                          │
+  │                         │── validate JWT       │                          │
+  │                         │── extract companyId  │                          │
+  │                         │── strip X-Company-Id │                          │
+  │                         │── inject X-Company-Id: <companyId>              │
+  │                         │─────────────────── forward ───────────────────▶│
+  │                         │                                                 │── resolve tenant DB
+  │                         │                                                 │── execute query
+  │◀── 200 (tenant data) ───│◀──────────────────────────────────────────────│
+```
+
+Key security properties of this flow:
+
+1. **The gateway is the only JWT validator.** Microservices trust the `X-Company-Id` header because only the gateway can set it — no request reaches them without passing through the gateway's middleware first.
+2. **Client-supplied `X-Company-Id` headers are stripped.** A malicious client cannot impersonate another tenant by manually setting this header; the gateway removes any incoming value and replaces it with the claim extracted from the signed JWT.
+3. **The login route is unauthenticated at the gateway.** `gsmauth` itself validates credentials; the gateway merely forwards to it without a JWT check.
+
+## Tenant Registry Pattern
+
+Every microservice that needs to connect to a tenant database follows the same resolution pattern: read the `X-Company-Id` header, look up the corresponding row in `TenantRegistryDb.Tenants`, and build a connection string dynamically.
+
+```
+TenantRegistryDb.Tenants
+┌────────────┬─────────────────┬──────────────────┬─────────┬─────────────┬──────────┐
+│ CompanyId  │ Server          │ Database         │ DbUser  │ DbPassword  │ IsActive │
+├────────────┼─────────────────┼──────────────────┼─────────┼─────────────┼──────────┤
+│ IH001      │ sql-host-1      │ Auth_IH001_Db    │ sa      │ ***         │ 1        │
+│ AG001      │ sql-host-2      │ Auth_AG001_Db    │ sa      │ ***         │ 1        │
+│ GSM001     │ (localdb)\...   │ Auth_GSM001_Db   │ sa-demo │ demo-pw     │ 1        │
+└────────────┴─────────────────┴──────────────────┴─────────┴─────────────┴──────────┘
+```
+
+Each row can point to a completely different SQL Server host, making it possible to place large tenants on dedicated hardware while smaller tenants share a server.
+
+<Note>
+  The gateway project deliberately has **no `DataAccess` layer**. The gateway does not connect to any database — it only reads JWT claims. Adding a database layer would violate YAGNI and introduce unnecessary coupling. All tenant resolution happens inside the downstream microservices.
+</Note>
+
+## Internal Project Structure
+
+Each backend service follows the same layered project structure:
+
+<Accordion title="GSMGateway — API Gateway">
+  - **GSMGateway.Api** — ASP.NET Core host, Swagger aggregation, YARP configuration
+  - **GSMGateway.Business** — resolves tenant identity from JWT claims
+  - **GSMGateway.Abstractions** — shared interfaces and contracts
+  - **GSMGateway.Entities** — constants, options, lightweight models
+  - **GSMGateway.Tenant** — tenant context middleware
+  - **GSMGateway.Infrastructure** — JWT claim reading utilities
+  - *(no DataAccess — by design)*
+</Accordion>
+
+<Accordion title="GSMAuth — Authentication Microservice">
+  - **GSMAuth.Api** — HTTP/Swagger exposure, login endpoint (`POST /api/v1/auth/login`)
+  - **GSMAuth.Business** — login orchestration logic
+  - **GSMAuth.Abstractions** — dependency inversion contracts
+  - **GSMAuth.Entities** — DTOs and domain entities
+  - **GSMAuth.Tenant** — cross-cutting tenant context
+  - **GSMAuth.Infrastructure** — PBKDF2 hashing, JWT issuance, tenant resolver
+  - **GSMAuth.DataAccess** — EF Core DbContext for registry + dynamic tenant context
+</Accordion>
+
+<Accordion title="GSMApplication — Application Metadata Microservice">
+  - **GSMApplication.Api** — HTTP exposure, menu endpoint (`GET /api/v1/application/getMenu`)
+  - **GSMApplication.Business** — menu and profile resolution
+  - **GSMApplication.Abstractions** — interfaces
+  - **GSMApplication.Entities** — DTOs
+  - **GSMApplication.DataAccess** — EF Core, `RegistryDbContext` for tenant lookup
+  - **GSMApplication.Infrastructure** — supporting utilities
+  - **GSMApplication.Tenant** — `TenantContext` populated from `X-Company-Id` header
+</Accordion>
+
+## Health Checks
+
+All three backend services and the gateway expose health endpoints. Docker Compose uses these for `depends_on` ordering — the gateway will not start until all three microservices are healthy.
+
+| Service | Health endpoint | Check interval |
+|---|---|---|
+| `gateway` | `http://localhost:80/api/health` | 30 s |
+| `gsmauth` | `http://localhost:8081/health` | 30 s |
+| `gsmapplication` | `http://localhost:8082/health` | 30 s |
+| `gsmoperations` | `http://localhost:8083/health` | 30 s |
+
+Each healthcheck allows 3 retries with a 30-second start period to accommodate EF Core migration startup time.

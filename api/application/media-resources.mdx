@@ -1,0 +1,153 @@
+---
+title: "Get Media Resources by Category for GSM Application"
+sidebarTitle: "Media Resources"
+description: "Fetch multimedia resource configurations filtered by one or more category strings, used to drive dynamic media display in the GSM Application frontend."
+---
+
+The `getMediaResources` endpoint returns a list of multimedia resource configurations grouped by category. Each resource carries an ordering hint and a `Config` payload that the frontend interprets to render media items such as banners, images, or embedded content. At least one category string must be provided — an empty `categories` list causes an immediate validation error without hitting the data layer.
+
+## Endpoint
+
+```
+GET /api/application/v1/application/getMediaResources
+```
+
+## Authentication
+
+All requests to this endpoint require a valid Bearer token. The token can be supplied as an `Authorization` header or as the `gsm_token` cookie.
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token obtained during login. Format: `Bearer <token>`
+</ParamField>
+
+> **Note:** The API gateway automatically injects the `X-Company-Id` header from the authenticated session. Clients must never set this header directly.
+
+## Query Parameters
+
+<ParamField query="categories" type="string[]" required>
+  One or more category identifiers to filter resources by. Repeat the parameter for multiple values (e.g. `?categories=banners&categories=icons`). The request fails with a validation error if this list is empty or omitted.
+</ParamField>
+
+## Response
+
+All responses are wrapped in the standard `ApiResponse<T>` envelope:
+
+```json
+{
+  "success": true | false,
+  "message": "string",
+  "data": [ ... ] | null,
+  "errorType": "string" | null,
+  "traceId": "string" | null,
+  "details": "string" | null
+}
+```
+
+### Response Fields
+
+<ResponseField name="success" type="boolean" required>
+  Indicates whether the request was processed successfully.
+</ResponseField>
+
+<ResponseField name="message" type="string" required>
+  Human-readable status message describing the outcome.
+</ResponseField>
+
+<ResponseField name="data" type="array">
+  List of multimedia resource objects matching the requested categories. `null` on failure.
+
+  <Expandable title="MultimediaResourceDto">
+    <ResponseField name="resourceCategory" type="string" required>
+      The category identifier this resource belongs to. Matches one of the values supplied in the `categories` query parameter.
+    </ResponseField>
+
+    <ResponseField name="resourceOrder" type="integer" required>
+      Display order index within the category. Lower values appear first. Use this field to sort resources before rendering.
+    </ResponseField>
+
+    <ResponseField name="config" type="string" required>
+      Serialized configuration payload for this resource. The structure and semantics are defined per category and interpreted by the frontend (e.g. URL, alt-text, dimensions, or embedded JSON).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="errorType" type="string | null">
+  Present when `success` is `false`. Common values: `Validation`, `NotFound`.
+</ResponseField>
+
+<ResponseField name="traceId" type="string | null">
+  Optional correlation ID for request tracing across services.
+</ResponseField>
+
+<ResponseField name="details" type="string | null">
+  Optional extended error detail message.
+</ResponseField>
+
+## HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Request processed. Check `success` in the body — a validation error (e.g. empty categories) is still returned as HTTP 200 with `success: false`. |
+| `400 Bad Request` | Returned when the `categories` array is null or empty (`InvalidCategories` validation error). |
+| `401 Unauthorized` | The Bearer token is missing, expired, or invalid. |
+| `404 Not Found` | No resources were found matching the supplied categories. |
+
+## Examples
+
+### Request — single category
+
+```bash
+curl --request GET \
+  --url 'https://your-gateway.example.com/api/application/v1/application/getMediaResources?categories=banners' \
+  --header 'Authorization: Bearer <token>'
+```
+
+### Request — multiple categories
+
+```bash
+curl --request GET \
+  --url 'https://your-gateway.example.com/api/application/v1/application/getMediaResources?categories=banners&categories=icons&categories=splash' \
+  --header 'Authorization: Bearer <token>'
+```
+
+### Successful Response
+
+```json
+{
+  "success": true,
+  "message": "Resources retrieved successfully.",
+  "data": [
+    {
+      "resourceCategory": "banners",
+      "resourceOrder": 1,
+      "config": "{\"url\":\"https://cdn.example.com/banner1.png\",\"alt\":\"Welcome Banner\"}"
+    },
+    {
+      "resourceCategory": "banners",
+      "resourceOrder": 2,
+      "config": "{\"url\":\"https://cdn.example.com/banner2.png\",\"alt\":\"Promo Banner\"}"
+    },
+    {
+      "resourceCategory": "icons",
+      "resourceOrder": 1,
+      "config": "{\"url\":\"https://cdn.example.com/icon-home.svg\",\"size\":24}"
+    }
+  ],
+  "errorType": null,
+  "traceId": "00-7c3d1a2b4e9f0c08-01",
+  "details": null
+}
+```
+
+### Validation Error — empty categories
+
+```json
+{
+  "success": false,
+  "message": "At least one category must be provided.",
+  "data": null,
+  "errorType": "Validation",
+  "traceId": "00-7c3d1a2b4e9f0c08-02",
+  "details": null
+}
+```

@@ -1,0 +1,316 @@
+---
+title: "API Rules CRUD for GSM Application Integrations"
+sidebarTitle: "API Rules"
+description: "Manage per-tenant API rule configurations that define external endpoint mappings consumed by the GSM Operations exec-api integration engine."
+---
+
+API Rules are tenant-scoped records that define how the GSM Application integration engine (`exec-api`) should reach external services. Each rule pairs a short identifier (`ShortName`) with a target URL and HTTP operation. When the operations service receives an `exec-api` request, it looks up the matching rule by `ShortName` and executes the call against the stored `UrlEndPoint`. This design centralises external endpoint configuration and keeps integration credentials and routing details out of client code.
+
+All five CRUD endpoints live under the `/api/application/v1/integrations/api-rules` path. The `idApiRule` path parameter is an integer primary key as stored in the `ApiRules` table (`db_ms` schema).
+
+---
+
+## List All API Rules
+
+Retrieve every API rule configured for the current tenant.
+
+### Endpoint
+
+```
+GET /api/application/v1/integrations/api-rules
+```
+
+### Authentication
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token. Format: `Bearer <token>`
+</ParamField>
+
+### Response
+
+<ResponseField name="success" type="boolean" required>
+  `true` on success.
+</ResponseField>
+
+<ResponseField name="message" type="string" required>
+  Status message.
+</ResponseField>
+
+<ResponseField name="data" type="array">
+  List of API rule objects.
+
+  <Expandable title="ApiRule (each item)">
+    <ResponseField name="idApi" type="integer" required>
+      Auto-generated primary key.
+    </ResponseField>
+
+    <ResponseField name="shortName" type="string" required>
+      Short unique identifier for the rule (max 100 chars, ASCII). Used to reference the rule from `exec-api` calls.
+    </ResponseField>
+
+    <ResponseField name="descr" type="string | null">
+      Optional human-readable description of the rule's purpose (max 200 chars, ASCII).
+    </ResponseField>
+
+    <ResponseField name="urlEndPoint" type="string" required>
+      The full external URL this rule targets (max 500 chars).
+    </ResponseField>
+
+    <ResponseField name="operation" type="string" required>
+      HTTP method for the external call (e.g. `GET`, `POST`, `PUT`, `DELETE`). Max 10 chars, ASCII.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example
+
+```bash
+curl --request GET \
+  --url 'https://your-gateway.example.com/api/application/v1/integrations/api-rules' \
+  --header 'Authorization: Bearer <token>'
+```
+
+```json
+{
+  "success": true,
+  "message": "API rules retrieved.",
+  "data": [
+    {
+      "idApi": 1,
+      "shortName": "ERP_STOCK_QUERY",
+      "descr": "Query live stock levels from ERP",
+      "urlEndPoint": "https://erp.internal.example.com/api/stock/query",
+      "operation": "POST"
+    }
+  ],
+  "errorType": null,
+  "traceId": "00-1a2b3c4d5e6f7a08-01",
+  "details": null
+}
+```
+
+---
+
+## Get API Rule by ID
+
+Retrieve a single API rule by its integer ID.
+
+### Endpoint
+
+```
+GET /api/application/v1/integrations/api-rules/{idApiRule}
+```
+
+### Path Parameters
+
+<ParamField path="idApiRule" type="integer" required>
+  The integer primary key of the API rule to retrieve.
+</ParamField>
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Rule found and returned. |
+| `401 Unauthorized` | Token missing or invalid. |
+| `404 Not Found` | No rule exists with the given `idApiRule`. |
+
+### Example
+
+```bash
+curl --request GET \
+  --url 'https://your-gateway.example.com/api/application/v1/integrations/api-rules/1' \
+  --header 'Authorization: Bearer <token>'
+```
+
+---
+
+## Create API Rule
+
+Create a new API rule for the current tenant.
+
+### Endpoint
+
+```
+POST /api/application/v1/integrations/api-rules
+```
+
+### Request Body
+
+<ParamField body="shortName" type="string" required>
+  A unique short identifier for this rule within the tenant (max 100 chars, ASCII). This is the key used by `exec-api` to locate the rule at runtime.
+</ParamField>
+
+<ParamField body="descr" type="string">
+  Optional description explaining the purpose of the rule (max 200 chars, ASCII).
+</ParamField>
+
+<ParamField body="urlEndPoint" type="string" required>
+  The full URL of the external endpoint this rule targets (max 500 chars).
+</ParamField>
+
+<ParamField body="operation" type="string" required>
+  HTTP verb to use when calling the external endpoint. Accepted values: `GET`, `POST`, `PUT`, `PATCH`, `DELETE` (max 10 chars, ASCII).
+</ParamField>
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Rule created. `data` contains the persisted `ApiRule` including the generated `idApi`. |
+| `400 Bad Request` | Required fields missing or invalid (e.g. duplicate `shortName`). |
+| `401 Unauthorized` | Token missing or invalid. |
+
+### Example
+
+```bash
+curl --request POST \
+  --url 'https://your-gateway.example.com/api/application/v1/integrations/api-rules' \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "shortName": "ERP_STOCK_QUERY",
+    "descr": "Query live stock levels from ERP",
+    "urlEndPoint": "https://erp.internal.example.com/api/stock/query",
+    "operation": "POST"
+  }'
+```
+
+```json
+{
+  "success": true,
+  "message": "API rule created successfully.",
+  "data": {
+    "idApi": 4,
+    "shortName": "ERP_STOCK_QUERY",
+    "descr": "Query live stock levels from ERP",
+    "urlEndPoint": "https://erp.internal.example.com/api/stock/query",
+    "operation": "POST"
+  },
+  "errorType": null,
+  "traceId": "00-1a2b3c4d5e6f7a08-03",
+  "details": null
+}
+```
+
+---
+
+## Update API Rule
+
+Replace the fields of an existing API rule identified by its integer ID.
+
+### Endpoint
+
+```
+PUT /api/application/v1/integrations/api-rules/{idApiRule}
+```
+
+### Path Parameters
+
+<ParamField path="idApiRule" type="integer" required>
+  The integer primary key of the rule to update.
+</ParamField>
+
+### Request Body
+
+Same fields as [Create API Rule](#create-api-rule) — all fields in `ApiRuleDTO` are replaced on the stored record.
+
+<ParamField body="shortName" type="string" required>
+  Updated short identifier.
+</ParamField>
+
+<ParamField body="descr" type="string">
+  Updated description (optional).
+</ParamField>
+
+<ParamField body="urlEndPoint" type="string" required>
+  Updated external endpoint URL.
+</ParamField>
+
+<ParamField body="operation" type="string" required>
+  Updated HTTP method.
+</ParamField>
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Rule updated. `data` contains the updated `ApiRule`. |
+| `400 Bad Request` | Request body is invalid. |
+| `401 Unauthorized` | Token missing or invalid. |
+| `404 Not Found` | No rule exists with the given `idApiRule`. |
+
+### Example
+
+```bash
+curl --request PUT \
+  --url 'https://your-gateway.example.com/api/application/v1/integrations/api-rules/4' \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "shortName": "ERP_STOCK_QUERY",
+    "descr": "Query live stock levels from ERP v2",
+    "urlEndPoint": "https://erp.internal.example.com/api/v2/stock/query",
+    "operation": "POST"
+  }'
+```
+
+---
+
+## Delete API Rule
+
+Permanently remove an API rule. Any `exec-api` invocations that reference the deleted rule's `ShortName` will subsequently fail with a `404`.
+
+### Endpoint
+
+```
+DELETE /api/application/v1/integrations/api-rules/{idApiRule}
+```
+
+### Path Parameters
+
+<ParamField path="idApiRule" type="integer" required>
+  The integer primary key of the rule to delete.
+</ParamField>
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Rule deleted successfully. |
+| `401 Unauthorized` | Token missing or invalid. |
+| `404 Not Found` | No rule exists with the given `idApiRule`. |
+
+### Example
+
+```bash
+curl --request DELETE \
+  --url 'https://your-gateway.example.com/api/application/v1/integrations/api-rules/4' \
+  --header 'Authorization: Bearer <token>'
+```
+
+```json
+{
+  "success": true,
+  "message": "API rule deleted successfully.",
+  "data": null,
+  "errorType": null,
+  "traceId": "00-1a2b3c4d5e6f7a08-05",
+  "details": null
+}
+```
+
+---
+
+## Common HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Operation completed. Inspect `success` field to confirm outcome. |
+| `400 Bad Request` | Validation failure or constraint violation. |
+| `401 Unauthorized` | Missing or invalid Bearer token. |
+| `404 Not Found` | The requested `idApiRule` does not exist. |
+
+## Integration with exec-api
+
+API rules created here are consumed by the Operations service `exec-api` endpoint (`POST /api/operations/v1/integrations/exec-api`). When `exec-api` receives a request, it resolves the target endpoint using the `UrlEndPoint` and `Operation` stored in the matching rule. See the [exec-api reference](/api/operations/integrations) for full details on how to invoke a rule from client code.

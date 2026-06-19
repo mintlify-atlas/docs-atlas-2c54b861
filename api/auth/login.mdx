@@ -1,0 +1,255 @@
+---
+title: "POST /api/security/v1/auth/login — User Login"
+sidebarTitle: "Login"
+description: "Authenticate a user against a tenant database, receive a signed JWT, and have the gsm_token HttpOnly cookie set automatically by the server."
+---
+
+The login endpoint authenticates a user within a specific company tenant. On success the server returns a signed JWT alongside an expiry timestamp, and simultaneously writes the same token into a `gsm_token` **HttpOnly, SameSite=Strict** cookie so browser-based clients never need to handle the raw token themselves. All calls must be routed through the GSM Gateway; the gateway strips the `/api/security` prefix and forwards the request to the internal Auth microservice.
+
+<Warning>
+  Credentials are transmitted as plain JSON in the request body. **Always terminate connections with TLS (HTTPS) in production.** Sending a password over an unencrypted connection exposes it to network interception. Never call this endpoint from a non-HTTPS origin.
+</Warning>
+
+## Endpoint
+
+```
+POST /api/security/v1/auth/login
+```
+
+**Authentication:** None — this endpoint is publicly accessible (`[AllowAnonymous]`).
+
+**Content-Type:** `application/json`
+
+---
+
+## Request Body
+
+<ParamField body="IDCompany" type="string" required>
+  The unique identifier of the company (tenant) the user belongs to. Must be a non-empty string. This value selects the correct tenant database before credential verification begins.
+</ParamField>
+
+<ParamField body="User" type="string" required>
+  The username of the account attempting to log in. Minimum length: 1 character.
+</ParamField>
+
+<ParamField body="Password" type="string" required>
+  The account password in plain text. Minimum length: 1 character. Transmit only over HTTPS.
+</ParamField>
+
+---
+
+## Response
+
+All responses share the `ApiResponse<T>` envelope:
+
+<ResponseField name="success" type="boolean">
+  `true` when authentication succeeded; `false` on any error.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  A human-readable status message (e.g., `"Login successful."`, `"Invalid credentials."`).
+</ResponseField>
+
+<ResponseField name="data" type="object | null">
+  Present only when `success` is `true`.
+
+  <Expandable title="LoginDto">
+    <ResponseField name="token" type="string">
+      The signed JWT. This is the same value written into the `gsm_token` cookie. Include it as `Authorization: Bearer <token>` for server-to-server calls.
+    </ResponseField>
+
+    <ResponseField name="expiresAtUtc" type="string (ISO 8601 datetime)">
+      UTC timestamp indicating when the token expires. Example: `"2025-06-01T12:00:00Z"`.
+    </ResponseField>
+
+    <ResponseField name="user" type="object">
+      Authenticated user details.
+
+      <Expandable title="AuthenticatedUserDto">
+        <ResponseField name="idUser" type="string (uuid)">
+          Unique identifier of the authenticated user.
+        </ResponseField>
+
+        <ResponseField name="username" type="string">
+          Login username.
+        </ResponseField>
+
+        <ResponseField name="fullName" type="string">
+          Display name of the user.
+        </ResponseField>
+
+        <ResponseField name="email" type="string | null">
+          User's email address, if configured.
+        </ResponseField>
+
+        <ResponseField name="idProfile" type="integer">
+          Numeric identifier of the user's permission profile.
+        </ResponseField>
+
+        <ResponseField name="passwordChangeRequired" type="boolean">
+          When `true`, the user must change their password before accessing protected resources.
+        </ResponseField>
+
+        <ResponseField name="location" type="string | null">
+          Optional location tag associated with the user account.
+        </ResponseField>
+
+        <ResponseField name="department" type="string | null">
+          Optional department tag associated with the user account.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="errorType" type="string | null">
+  Populated only when `success` is `false`. One of: `Validation`, `Unauthorized`, `NotFound`, `BadRequest`, `Conflict`, `Internal`, `Forbidden`.
+</ResponseField>
+
+<ResponseField name="traceId" type="string | null">
+  An optional correlation identifier for distributed tracing. Useful when reporting issues to support.
+</ResponseField>
+
+<ResponseField name="details" type="string | null">
+  Optional extended error detail returned in non-production environments.
+</ResponseField>
+
+### Cookie set on success
+
+| Name | Attributes |
+|------|------------|
+| `gsm_token` | `HttpOnly`, `SameSite=Strict`, `Path=/`, expires at `ExpiresAtUtc` |
+
+The browser will automatically attach this cookie to every subsequent same-origin request. You do **not** need to read or forward it manually from client-side JavaScript.
+
+---
+
+## HTTP Status Codes
+
+| Status | `errorType` | Scenario |
+|--------|-------------|----------|
+| `200 OK` | — | Authentication succeeded. Token and user data returned. |
+| `400 Bad Request` | `Validation` | One or more required fields are missing or empty. |
+| `401 Unauthorized` | `Unauthorized` | Credentials were provided but are incorrect; user may also be inactive. |
+| `404 Not Found` | `NotFound` | The specified `IDCompany` does not exist, or the user was not found in that tenant. |
+| `500 Internal Server Error` | `Internal` | An unexpected server-side error occurred. |
+
+<Note>
+  Even error responses use HTTP `200 OK` at the transport level in some middleware configurations. Always check the `success` field in the response body, not only the HTTP status code.
+</Note>
+
+---
+
+## Examples
+
+### cURL
+
+```bash
+curl --request POST \
+  --url https://your-gateway-host/api/security/v1/auth/login \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "IDCompany": "GSM001",
+    "User": "admin",
+    "Password": "Admin123*"
+  }'
+```
+
+### TypeScript (fetch)
+
+```typescript
+interface AuthenticatedUserDto {
+  idUser: string;
+  username: string;
+  fullName: string;
+  email: string | null;
+  idProfile: number;
+  passwordChangeRequired: boolean;
+  location: string | null;
+  department: string | null;
+}
+
+interface LoginDto {
+  token: string;
+  expiresAtUtc: string;
+  user: AuthenticatedUserDto;
+}
+
+interface ApiResponse<T> {
+  success: boolean;
+  message: string;
+  data: T | null;
+  errorType: string | null;
+  traceId: string | null;
+  details: string | null;
+}
+
+async function login(
+  idCompany: string,
+  user: string,
+  password: string
+): Promise<ApiResponse<LoginDto>> {
+  const response = await fetch("/api/security/v1/auth/login", {
+    method: "POST",
+    credentials: "include", // ensures the gsm_token cookie is stored and sent
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ IDCompany: idCompany, User: user, Password: password }),
+  });
+
+  const result: ApiResponse<LoginDto> = await response.json();
+
+  if (!result.success) {
+    // result.errorType is e.g. "Unauthorized", "NotFound", "Validation"
+    throw new Error(`Login failed [${result.errorType}]: ${result.message}`);
+  }
+
+  // The gsm_token cookie has been set automatically by the server.
+  // For server-to-server calls you can also read result.data.token directly.
+  if (result.data?.user.passwordChangeRequired) {
+    console.warn("User must change their password before proceeding.");
+  }
+
+  return result;
+}
+```
+
+### Success response example
+
+```json
+{
+  "success": true,
+  "message": "Login successful.",
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "expiresAtUtc": "2025-06-01T12:00:00Z",
+    "user": {
+      "idUser": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "username": "admin",
+      "fullName": "System Administrator",
+      "email": "admin@company.com",
+      "idProfile": 1,
+      "passwordChangeRequired": false,
+      "location": null,
+      "department": "IT"
+    }
+  },
+  "errorType": null,
+  "traceId": null,
+  "details": null
+}
+```
+
+### Invalid credentials response example
+
+```json
+{
+  "success": false,
+  "message": "Invalid credentials.",
+  "data": null,
+  "errorType": "Unauthorized",
+  "traceId": null,
+  "details": null
+}
+```

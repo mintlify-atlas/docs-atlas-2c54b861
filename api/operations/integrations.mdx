@@ -1,0 +1,207 @@
+---
+title: "Execute External API via GSM Operations Integration Engine"
+sidebarTitle: "Integrations"
+description: "Invoke any pre-configured API rule from the GSM Application service through the exec-api integration engine, proxying calls to external endpoints with custom headers and payloads."
+---
+
+The `exec-api` endpoint is the GSM Operations integration engine. It resolves and executes calls to external systems using the API rule configuration stored in the GSM Application service (see [API Rules](/api/application/api-rules)). Rather than requiring clients to know external endpoint URLs or credentials, `exec-api` accepts a `UrlEndPoint`, an `Operation`, and an optional set of headers, parameters, and a body — and dispatches the HTTP request on behalf of the caller. This centralises external integrations, enforces tenant isolation, and allows rules to be updated without client-side changes.
+
+A typical flow: an admin creates an API rule in the Application service with a `ShortName` and `UrlEndPoint`; a client then calls `exec-api` with the same `UrlEndPoint` and method, optionally supplying runtime headers, query parameters, and a request body.
+
+## Endpoint
+
+```
+POST /api/operations/v1/integrations/exec-api
+```
+
+## Authentication
+
+All requests to this endpoint require a valid Bearer token. The token can be supplied as an `Authorization` header or as the `gsm_token` cookie.
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token obtained during login. Format: `Bearer <token>`
+</ParamField>
+
+> **Note:** The API gateway automatically injects the `X-Company-Id` header from the authenticated session. Clients must never set this header directly.
+
+## Request Body
+
+<ParamField body="urlEndPoint" type="string" required>
+  The external endpoint URL to invoke. This must match a `UrlEndPoint` value on an API rule registered in the Application service. The integration engine uses this field to validate the call against the configured rules and to build the outbound HTTP request.
+</ParamField>
+
+<ParamField body="operation" type="string" required>
+  The HTTP method to use for the outbound call. Must match the `Operation` defined on the API rule. Accepted values: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`.
+</ParamField>
+
+<ParamField body="headers" type="object">
+  Optional dictionary of additional HTTP headers to include in the outbound request. Keys and values are both strings. These are merged with any default headers the integration engine applies (e.g. content-type, tenant context).
+
+  ```json
+  {
+    "X-Api-Key": "abc123",
+    "Accept-Language": "en-US"
+  }
+  ```
+</ParamField>
+
+<ParamField body="parameters" type="object">
+  Optional dictionary of query string parameters to append to the outbound URL. Keys and values are both strings.
+
+  ```json
+  {
+    "page": "1",
+    "pageSize": "20"
+  }
+  ```
+</ParamField>
+
+<ParamField body="body" type="any">
+  Optional request body to forward to the external endpoint. Can be any JSON-serialisable value (object, array, or primitive). The engine serialises this as the body of the outbound HTTP request. Ignored for methods that do not accept a body (e.g. `GET`, `DELETE`).
+</ParamField>
+
+### Example Request Body
+
+```json
+{
+  "urlEndPoint": "https://erp.internal.example.com/api/stock/query",
+  "operation": "POST",
+  "headers": {
+    "X-Api-Key": "erp-secret-key"
+  },
+  "parameters": {
+    "warehouseId": "WH-01"
+  },
+  "body": {
+    "skuCodes": ["LAV-001-F", "LAV-001-G"],
+    "asOfDate": "2024-06-01"
+  }
+}
+```
+
+## Response
+
+All responses are wrapped in the standard `ApiResponse<T>` envelope:
+
+```json
+{
+  "success": true | false,
+  "message": "string",
+  "data": { ... } | null,
+  "errorType": "string" | null,
+  "traceId": "string" | null,
+  "details": "string" | null
+}
+```
+
+### Response Fields
+
+<ResponseField name="success" type="boolean" required>
+  `true` if the outbound call was executed and the external API returned a successful response. `false` if the request was blocked (e.g. no matching rule), or the external call failed.
+</ResponseField>
+
+<ResponseField name="message" type="string" required>
+  Human-readable status message. Describes the outcome of both the rule resolution and the external HTTP call.
+</ResponseField>
+
+<ResponseField name="data" type="any | null">
+  The response payload returned by the external API, forwarded as-is. Structure depends entirely on the external endpoint. `null` on failure.
+</ResponseField>
+
+<ResponseField name="errorType" type="string | null">
+  Present when `success` is `false`. Identifies the error category.
+</ResponseField>
+
+<ResponseField name="traceId" type="string | null">
+  Optional correlation ID for tracing the request across GSM services and the external call.
+</ResponseField>
+
+<ResponseField name="details" type="string | null">
+  Optional extended error information, such as the HTTP status returned by the external endpoint.
+</ResponseField>
+
+## HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | The exec-api engine processed the request. Inspect `success` in the body — even a failed external call may return HTTP 200 with `success: false`. |
+| `400 Bad Request` | The request body is malformed, required fields are missing, or the supplied `urlEndPoint` / `operation` combination does not match any registered API rule for the tenant. |
+| `401 Unauthorized` | The Bearer token is missing, expired, or invalid. |
+| `403 Forbidden` | The authenticated user does not have permission to invoke this integration. |
+| `404 Not Found` | No API rule matching the supplied `urlEndPoint` and `operation` was found in the Application service. Ensure the rule exists before calling this endpoint (see [API Rules](/api/application/api-rules)). |
+| `409 Conflict` | A conflict occurred during execution — for example, a duplicate resource was detected at the external endpoint. |
+| `500 Internal Server Error` | An unexpected error occurred within the integration engine or the external API returned an unrecoverable error. |
+
+## Example
+
+### Request
+
+```bash
+curl --request POST \
+  --url 'https://your-gateway.example.com/api/operations/v1/integrations/exec-api' \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "urlEndPoint": "https://erp.internal.example.com/api/stock/query",
+    "operation": "POST",
+    "headers": {
+      "X-Api-Key": "erp-secret-key"
+    },
+    "parameters": {
+      "warehouseId": "WH-01"
+    },
+    "body": {
+      "skuCodes": ["LAV-001-F", "LAV-001-G"],
+      "asOfDate": "2024-06-01"
+    }
+  }'
+```
+
+### Successful Response
+
+```json
+{
+  "success": true,
+  "message": "External API executed successfully.",
+  "data": {
+    "results": [
+      { "sku": "LAV-001-F", "stockQty": 120.5, "warehouseId": "WH-01" },
+      { "sku": "LAV-001-G", "stockQty": 84.0, "warehouseId": "WH-01" }
+    ]
+  },
+  "errorType": null,
+  "traceId": "00-5f6a7b8c9d0e1f02-01",
+  "details": null
+}
+```
+
+### Error — Rule Not Found
+
+```json
+{
+  "success": false,
+  "message": "No API rule found for the supplied endpoint and operation.",
+  "data": null,
+  "errorType": "NotFound",
+  "traceId": "00-5f6a7b8c9d0e1f02-02",
+  "details": "urlEndPoint: https://erp.internal.example.com/api/stock/query, operation: POST"
+}
+```
+
+### Error — Unauthorized
+
+```json
+{
+  "success": false,
+  "message": "Unauthorized.",
+  "data": null,
+  "errorType": "Unauthorized",
+  "traceId": "00-5f6a7b8c9d0e1f02-03",
+  "details": null
+}
+```
+
+## Related Resources
+
+- **[API Rules](/api/application/api-rules)** — Create and manage the rule registry that `exec-api` resolves at runtime. Each rule pairs a `ShortName` with a `UrlEndPoint` and `Operation`.
+- **[Transactions](/api/operations/transactions)** — Transaction creation and state management endpoints that may trigger `exec-api` calls internally for ERP or third-party synchronisation.

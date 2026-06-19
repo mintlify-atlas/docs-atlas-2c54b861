@@ -1,0 +1,245 @@
+---
+title: "POST /api/security/v1/tenant/resolve — Resolve Tenant"
+sidebarTitle: "Resolve Tenant"
+description: "Check whether a company tenant exists and retrieve its JSON theme configuration for light/dark mode and metadata before the login screen renders."
+---
+
+The tenant resolve endpoint is designed to be called before the login form is displayed. Given a company identifier, it confirms whether the tenant exists in the system and returns that tenant's visual theme configuration as a JSON string. The frontend uses this response to apply company-specific branding — colours, logos, and metadata — for both light and dark modes before the user ever enters their credentials. This endpoint is fully anonymous and requires no authentication token.
+
+<Note>
+  Call this endpoint as early as possible in the page lifecycle (e.g., during the initial app load or when the user types their company ID) so that theme styles are applied before the login UI is rendered, preventing a flash of unstyled content.
+</Note>
+
+## Endpoint
+
+```
+POST /api/security/v1/tenant/resolve
+```
+
+**Authentication:** None — the entire `TenantController` is decorated with `[AllowAnonymous]`.
+
+**Content-Type:** `application/json`
+
+---
+
+## Request Body
+
+<ParamField body="IDCompany" type="string" required>
+  The company identifier to look up. Must be a non-empty string after trimming whitespace. This value is matched against the tenant registry to determine whether a database-per-tenant record exists.
+</ParamField>
+
+---
+
+## Response
+
+All responses use the `ApiResponse<T>` envelope.
+
+<ResponseField name="success" type="boolean">
+  `true` when the company was found and resolved successfully.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable status. Returns `"Tenant is valid."` on success, or `"Company is invalid or inactive."` on failure.
+</ResponseField>
+
+<ResponseField name="data" type="object | null">
+  Present only when `success` is `true`.
+
+  <Expandable title="TenantResolveDto">
+    <ResponseField name="tenantExists" type="boolean">
+      Always `true` when the response is successful (a `false` result is communicated via `success: false` rather than this field).
+    </ResponseField>
+
+    <ResponseField name="jsonStyles" type="string | null">
+      A JSON-encoded string containing the tenant's theme configuration. When `null`, no custom theme is defined and the application should fall back to its default styles. When present, parse this string to obtain a `TenantTheme` object with the following shape:
+
+      <Expandable title="TenantTheme (parsed from jsonStyles)">
+        <ResponseField name="light" type="object">
+          CSS custom-property values to apply when the user's colour scheme is `light`. Typically contains primary colours, background, text, and accent tokens.
+        </ResponseField>
+
+        <ResponseField name="dark" type="object">
+          CSS custom-property values to apply when the user's colour scheme is `dark`.
+        </ResponseField>
+
+        <ResponseField name="meta" type="object">
+          Non-colour metadata for the tenant, such as the company display name, logo URL, and favicon path.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="errorType" type="string | null">
+  Populated only when `success` is `false`. One of: `Validation` (missing or empty `IDCompany`), `NotFound` (tenant not found in the registry).
+</ResponseField>
+
+<ResponseField name="traceId" type="string | null">
+  Optional correlation identifier for distributed tracing.
+</ResponseField>
+
+<ResponseField name="details" type="string | null">
+  Optional extended error detail in non-production environments.
+</ResponseField>
+
+---
+
+## HTTP Status Codes
+
+| Status | `errorType` | Scenario |
+|--------|-------------|----------|
+| `200 OK` | — | Tenant was found; `data` contains `tenantExists: true` and optional styles. |
+| `200 OK` | `Validation` | `IDCompany` was missing or blank after trimming. |
+| `200 OK` | `NotFound` | The specified company ID does not match any registered tenant. |
+
+<Note>
+  The Auth microservice always returns HTTP `200 OK` from this controller, even for validation and not-found conditions. Use the `success` and `errorType` fields in the response body to determine the outcome — do not rely on the HTTP status code alone.
+</Note>
+
+---
+
+## Examples
+
+### cURL
+
+```bash
+curl --request POST \
+  --url https://your-gateway-host/api/security/v1/tenant/resolve \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "IDCompany": "GSM001"
+  }'
+```
+
+### TypeScript — resolve and apply tenant theme
+
+The following example shows the full frontend pattern: call the endpoint, parse `jsonStyles`, and apply CSS custom properties for the active colour scheme.
+
+```typescript
+interface TenantThemeTokens {
+  [cssVariable: string]: string;
+}
+
+interface TenantTheme {
+  light: TenantThemeTokens;
+  dark: TenantThemeTokens;
+  meta: {
+    companyName?: string;
+    logoUrl?: string;
+    faviconUrl?: string;
+    [key: string]: unknown;
+  };
+}
+
+interface TenantResolveDto {
+  tenantExists: boolean;
+  jsonStyles: string | null;
+}
+
+interface ApiResponse<T> {
+  success: boolean;
+  message: string;
+  data: T | null;
+  errorType: string | null;
+  traceId: string | null;
+  details: string | null;
+}
+
+async function resolveTenant(idCompany: string): Promise<TenantResolveDto> {
+  const response = await fetch("/api/security/v1/tenant/resolve", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ IDCompany: idCompany }),
+  });
+
+  const result: ApiResponse<TenantResolveDto> = await response.json();
+
+  if (!result.success || !result.data) {
+    // errorType will be "Validation" or "NotFound"
+    throw new Error(`Tenant resolution failed [${result.errorType}]: ${result.message}`);
+  }
+
+  return result.data;
+}
+
+function applyTenantTheme(jsonStyles: string): void {
+  const theme: TenantTheme = JSON.parse(jsonStyles);
+
+  // Detect the user's preferred colour scheme
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const tokens = prefersDark ? theme.dark : theme.light;
+
+  // Apply CSS custom properties to the document root
+  const root = document.documentElement;
+  for (const [variable, value] of Object.entries(tokens)) {
+    root.style.setProperty(variable, value);
+  }
+
+  // Apply branding metadata
+  if (theme.meta.companyName) {
+    document.title = theme.meta.companyName;
+  }
+  if (theme.meta.faviconUrl) {
+    const link =
+      (document.querySelector("link[rel='icon']") as HTMLLinkElement) ??
+      document.createElement("link");
+    link.rel = "icon";
+    link.href = theme.meta.faviconUrl;
+    document.head.appendChild(link);
+  }
+}
+
+// Usage: called on the pre-login / company-selection screen
+async function initTenantBranding(idCompany: string): Promise<void> {
+  const tenant = await resolveTenant(idCompany);
+
+  if (tenant.jsonStyles) {
+    applyTenantTheme(tenant.jsonStyles);
+  }
+  // tenant.tenantExists is true here — proceed to show the login form
+}
+```
+
+### Success response example
+
+```json
+{
+  "success": true,
+  "message": "Tenant is valid.",
+  "data": {
+    "tenantExists": true,
+    "jsonStyles": "{\"light\":{\"--color-primary\":\"#0055CC\",\"--color-background\":\"#FFFFFF\",\"--color-text\":\"#111111\"},\"dark\":{\"--color-primary\":\"#4D9EFF\",\"--color-background\":\"#1A1A2E\",\"--color-text\":\"#F0F0F0\"},\"meta\":{\"companyName\":\"GSM Corp\",\"logoUrl\":\"/assets/gsm-logo.svg\",\"faviconUrl\":\"/assets/favicon.ico\"}}"
+  },
+  "errorType": null,
+  "traceId": null,
+  "details": null
+}
+```
+
+### Tenant not found response example
+
+```json
+{
+  "success": false,
+  "message": "Company is invalid or inactive.",
+  "data": null,
+  "errorType": "NotFound",
+  "traceId": null,
+  "details": null
+}
+```
+
+### Validation error response example
+
+```json
+{
+  "success": false,
+  "message": "Company is invalid or inactive.",
+  "data": null,
+  "errorType": "Validation",
+  "traceId": null,
+  "details": null
+}
+```

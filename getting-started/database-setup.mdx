@@ -1,0 +1,169 @@
+---
+title: "Provisioning Tenant Registry and Per-Tenant Databases"
+sidebarTitle: "Database Setup"
+description: "How to create TenantRegistryDb, register new tenants, and provision per-tenant databases with the correct Users schema including PBKDF2 password columns."
+---
+
+GSM Application uses a two-database model. A single central database (`TenantRegistryDb`) acts as a directory, mapping each company's `CompanyId` to the SQL Server host and database where that tenant's data lives. Every microservice connects to this registry first, resolves the tenant-specific connection string, and then opens a second connection to the correct tenant database. This pattern means each agricultural company's data is fully isolated at the database level — no joins or queries can accidentally cross tenant boundaries.
+
+## Database Model Overview
+
+<CardGroup cols={2}>
+  <Card title="TenantRegistryDb" icon="table">
+    One central SQL Server database, shared across all services. Contains a single `Tenants` table. Services connect here to resolve dynamic connection strings.
+  </Card>
+  <Card title="Tenant Databases" icon="database">
+    One SQL Server database per company (tenant). Each holds a `Users` table with PBKDF2-hashed credentials plus any domain data for that tenant.
+  </Card>
+</CardGroup>
+
+## 1. Create TenantRegistryDb
+
+Run the following SQL against your SQL Server instance using SQL Server Management Studio, Azure Data Studio, or `sqlcmd`. This creates the registry database and the `Tenants` lookup table.
+
+```sql
+CREATE DATABASE TenantRegistryDb;
+GO
+USE TenantRegistryDb;
+GO
+CREATE TABLE Tenants (
+    CompanyId  NVARCHAR(50)  NOT NULL PRIMARY KEY,
+    Server     NVARCHAR(255) NOT NULL,
+    Database   NVARCHAR(255) NOT NULL,
+    DbUser     NVARCHAR(255) NOT NULL,
+    DbPassword NVARCHAR(255) NOT NULL,
+    IsActive   BIT           NOT NULL DEFAULT(1)
+);
+GO
+```
+
+<Note>
+  The connection string in `DB_MASTER_URL` must use `TrustServerCertificate=True` when connecting to SQL Server instances with self-signed TLS certificates. This is the default in the `.env.example` file. For production instances with a CA-signed certificate you may set this to `False` or remove the flag entirely.
+
+  ```ini
+  DB_MASTER_URL=Server=<host>;User ID=<user>;Password=<pass>;Database=TenantRegistryDb;TrustServerCertificate=True
+  ```
+</Note>
+
+### Tenants Table Column Reference
+
+| Column | Type | Description |
+|---|---|---|
+| `CompanyId` | `NVARCHAR(50)` PK | Unique identifier for the tenant. This is the value users enter at login and the `companyId` claim in the JWT. Examples: `IH001`, `AG001`. |
+| `Server` | `NVARCHAR(255)` | SQL Server host and optional port for the tenant database. Accepts any valid ADO.NET server address, e.g. `192.168.1.50,1433` or `(localdb)\mssqllocaldb`. |
+| `Database` | `NVARCHAR(255)` | Name of the tenant-specific SQL Server database on that server. |
+| `DbUser` | `NVARCHAR(255)` | SQL login username used to connect to the tenant database. |
+| `DbPassword` | `NVARCHAR(255)` | Password for the SQL login. Stored in plaintext in the registry — use a dedicated low-privilege login per tenant. |
+| `IsActive` | `BIT` | When `0`, the tenant is disabled. Login attempts for an inactive tenant are rejected by `gsmauth` before any credential check. |
+
+## 2. Create a Tenant Database
+
+Each tenant needs its own database on a SQL Server instance (which can be the same instance or a different one). The minimum required schema is a `Users` table. The `Users` table must include `PasswordHash` and `PasswordSalt` columns because `gsmauth` uses PBKDF2 hashing — the plain-text business columns from a legacy system are not sufficient to validate passwords.
+
+Run the following SQL on the SQL Server instance that will host the tenant:
+
+```sql
+CREATE DATABASE Auth_GSM001_Db;
+GO
+USE Auth_GSM001_Db;
+GO
+CREATE TABLE Users (
+    IdUser                  INT            IDENTITY(1,1) PRIMARY KEY,
+    Username                NVARCHAR(100)  NOT NULL UNIQUE,
+    FirstName               NVARCHAR(100)  NULL,
+    LastName                NVARCHAR(100)  NULL,
+    FullName                NVARCHAR(200)  NULL,
+    Email                   NVARCHAR(200)  NULL,
+    Department              NVARCHAR(100)  NULL,
+    Profile                 NVARCHAR(100)  NULL,
+    PasswordChangeRequired  BIT            NOT NULL DEFAULT(0),
+    Location                NVARCHAR(100)  NULL,
+    IsActive                BIT            NOT NULL DEFAULT(1),
+    PasswordHash            NVARCHAR(500)  NOT NULL,
+    PasswordSalt            NVARCHAR(500)  NOT NULL
+);
+GO
+```
+
+<Warning>
+  **Do not insert users with empty `PasswordHash` and `PasswordSalt` values.** The authentication service will reject any login attempt where these fields are blank. Users must be created through the application's user management flow (which generates the PBKDF2 hash and salt) or through a migration script that performs the hashing.
+</Warning>
+
+## 3. Register the Tenant
+
+Once the tenant database exists, add a row to `TenantRegistryDb.Tenants` so the microservices can discover it. The example below registers a demo tenant using `(localdb)\mssqllocaldb`:
+
+```sql
+USE TenantRegistryDb;
+GO
+INSERT INTO Tenants (CompanyId, Server, Database, DbUser, DbPassword, IsActive)
+VALUES ('GSM001', '(localdb)\mssqllocaldb', 'Auth_GSM001_Db', 'sa-demo', 'demo-password', 1);
+GO
+```
+
+For a production tenant on a dedicated SQL Server host:
+
+```sql
+USE TenantRegistryDb;
+GO
+INSERT INTO Tenants (CompanyId, Server, Database, DbUser, DbPassword, IsActive)
+VALUES ('IH001', '10.0.1.20,1433', 'Auth_IH001_Db', 'gsm_ih001_user', 'Str0ng!Pass2026', 1);
+GO
+```
+
+<Tip>
+  Use a dedicated SQL login per tenant rather than sharing `sa`. This limits the blast radius if a connection string is ever exposed — a compromised `IH001` credential cannot access `AG001`'s database.
+</Tip>
+
+## 4. The IsActive Flag
+
+The `IsActive` column is checked by `gsmauth` before it attempts to resolve the tenant database connection. Setting `IsActive = 0` is the recommended way to disable a tenant without deleting its data.
+
+```sql
+-- Deactivate a tenant
+UPDATE TenantRegistryDb.Tenants
+SET IsActive = 0
+WHERE CompanyId = 'IH001';
+
+-- Reactivate a tenant
+UPDATE TenantRegistryDb.Tenants
+SET IsActive = 1
+WHERE CompanyId = 'IH001';
+```
+
+When a user attempts to log in with an inactive `CompanyId`, `gsmauth` returns a `401 Unauthorized` response immediately, without connecting to the tenant database or evaluating the username and password. This makes tenant deactivation an effective emergency killswitch.
+
+## 5. Verify the Setup
+
+After provisioning, you can do a quick sanity check from `sqlcmd` or any SQL client:
+
+```sql
+-- Confirm the registry has your tenants
+SELECT CompanyId, Server, Database, IsActive
+FROM TenantRegistryDb.Tenants;
+
+-- Confirm the tenant database and Users table exist
+USE Auth_GSM001_Db;
+SELECT TOP 0 * FROM Users;
+```
+
+Then start the stack with `docker compose up --build` and attempt a login via the frontend at `http://localhost:3000`. A successful JWT response confirms that `gsmauth` resolved the tenant registry correctly and connected to the tenant database.
+
+## Multi-Server Tenant Example
+
+Because each `Tenants` row can specify a different `Server`, you can distribute tenants across SQL Server instances. The following example shows two tenants on separate hosts:
+
+```sql
+USE TenantRegistryDb;
+GO
+-- Large tenant on dedicated server
+INSERT INTO Tenants (CompanyId, Server, Database, DbUser, DbPassword, IsActive)
+VALUES ('IH001', '10.0.1.20,1433', 'Auth_IH001_Db', 'gsm_ih001', 'SecretA!', 1);
+
+-- Smaller tenant on shared server
+INSERT INTO Tenants (CompanyId, Server, Database, DbUser, DbPassword, IsActive)
+VALUES ('AG001', '10.0.1.21,1433', 'Auth_AG001_Db', 'gsm_ag001', 'SecretB!', 1);
+GO
+```
+
+No code changes are needed — the microservices build the connection string dynamically from the registry row at request time.

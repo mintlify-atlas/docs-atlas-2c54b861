@@ -1,0 +1,128 @@
+{
+  "projectType": "saas",
+  "projectName": "GSM Application",
+  "projectDescription": "A multi-tenant, full-stack agricultural operations platform with a React SPA frontend, an API gateway, and three .NET microservices for authentication, application management, and operations (products, employees, transactions).",
+  "theme": "luma",
+  "primaryColor": "#3B4FA8",
+  "lightColor": "#EEF0FB",
+  "darkColor": "#1E2A6E",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Getting Started",
+            "pages": [
+              "getting-started/local-setup",
+              "getting-started/environment-variables",
+              "getting-started/database-setup"
+            ]
+          },
+          {
+            "group": "Multi-Tenancy",
+            "pages": [
+              "multi-tenancy/tenant-model",
+              "multi-tenancy/tenant-theming"
+            ]
+          },
+          {
+            "group": "Services",
+            "pages": [
+              "services/gateway",
+              "services/auth",
+              "services/application",
+              "services/operations"
+            ]
+          },
+          {
+            "group": "Frontend",
+            "pages": [
+              "frontend/overview",
+              "frontend/routing-and-i18n",
+              "frontend/features"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker-compose",
+              "deployment/ci-cd"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Authentication",
+            "pages": [
+              "api/auth/login",
+              "api/auth/logout",
+              "api/auth/tenant-resolve"
+            ]
+          },
+          {
+            "group": "Application Service",
+            "pages": [
+              "api/application/menu",
+              "api/application/media-resources",
+              "api/application/users",
+              "api/application/api-rules"
+            ]
+          },
+          {
+            "group": "Operations Service",
+            "pages": [
+              "api/operations/master-data",
+              "api/operations/transactions",
+              "api/operations/integrations"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Database-per-tenant multi-tenancy with dynamic connection resolution",
+    "JWT-based authentication with HttpOnly cookie session management",
+    "YARP-based API gateway that injects X-Company-Id header for downstream services",
+    "Three independent .NET microservices: GSMAuth, GSMApplication, GSMOperations",
+    "React 19 SPA with React Router v7, Tailwind CSS v4, and i18next (EN/ES)",
+    "Per-tenant CSS theming resolved at login via JsonStyles stored in the registry database",
+    "Productivity workflow: multi-step wizard for assigning employees to herb harvest transactions",
+    "Integration engine supporting configurable API rules for external service calls",
+    "Docker Compose orchestration for local development and production deployment",
+    "CI/CD via GitHub Actions deploying to AWS (ECS for services, S3+CloudFront for frontend)"
+  ],
+  "publicApiSurface": [
+    "POST /api/security/v1/auth/login",
+    "POST /api/security/v1/auth/logout",
+    "POST /api/security/v1/tenant/resolve",
+    "GET  /api/application/v1/application/getMenu",
+    "GET  /api/application/v1/application/getMediaResources",
+    "PUT  /api/application/v1/users/{idUser}/password",
+    "GET  /api/application/v1/integrations/api-rules",
+    "POST /api/application/v1/integrations/api-rules",
+    "PUT  /api/application/v1/integrations/api-rules/{idApiRule}",
+    "DELETE /api/application/v1/integrations/api-rules/{idApiRule}",
+    "GET  /api/operations/v1/operations/parameters",
+    "GET  /api/operations/v1/operations/master-products",
+    "GET  /api/operations/v1/operations/filtered-employees",
+    "GET  /api/operations/v1/operations/filtered-suppliers",
+    "GET  /api/operations/v1/operations/categories",
+    "GET  /api/operations/v1/operations/sku-definitions",
+    "POST /api/operations/v1/operations/create-trx",
+    "PATCH /api/operations/v1/operations/{idTrxHeader}",
+    "POST /api/operations/v1/operations/getTrx",
+    "POST /api/operations/v1/integrations/exec-api"
+  ]
+}

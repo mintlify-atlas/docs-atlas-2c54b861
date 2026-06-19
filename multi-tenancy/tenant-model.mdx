@@ -1,0 +1,174 @@
+---
+title: "Database-Per-Tenant Architecture in GSM Application"
+sidebarTitle: "Tenant Model"
+description: "How GSM Application isolates every company in its own SQL Server database, resolves tenant identity at runtime, and manages the central Tenants registry."
+---
+
+GSM Application uses a strict **database-per-tenant** architecture: every company that subscribes to the platform gets its own dedicated SQL Server database. No tenant shares tables, schemas, or connection pools with another. The central `TenantRegistryDb` database acts as a routing directory — it maps a company identifier to the precise server and database that holds that company's data.
+
+## The Tenants Registry Table
+
+All tenant routing metadata lives in `TenantRegistryDb.Tenants`. The table is created by the following DDL:
+
+```sql
+CREATE DATABASE TenantRegistryDb;
+GO
+USE TenantRegistryDb;
+GO
+
+CREATE TABLE Tenants (
+    CompanyId  NVARCHAR(50)  NOT NULL PRIMARY KEY,
+    Server     NVARCHAR(255) NOT NULL,
+    Database   NVARCHAR(255) NOT NULL,
+    DbUser     NVARCHAR(255) NOT NULL,
+    DbPassword NVARCHAR(255) NOT NULL,
+    IsActive   BIT           NOT NULL DEFAULT(1)
+);
+```
+
+<ResponseField name="CompanyId" type="NVARCHAR(50)" required>
+  Primary key. Short alphanumeric identifier for the company — e.g. `IH001`. This value is embedded in every JWT as the `companyId` claim.
+</ResponseField>
+
+<ResponseField name="Server" type="NVARCHAR(255)" required>
+  Hostname or instance name of the SQL Server that hosts the tenant database.
+</ResponseField>
+
+<ResponseField name="Database" type="NVARCHAR(255)" required>
+  Name of the tenant-specific database on the target server.
+</ResponseField>
+
+<ResponseField name="DbUser" type="NVARCHAR(255)" required>
+  SQL login username used when building the dynamic connection string.
+</ResponseField>
+
+<ResponseField name="DbPassword" type="NVARCHAR(255)" required>
+  Password for the SQL login. Store this value in an encrypted column or a secrets manager in production environments.
+</ResponseField>
+
+<ResponseField name="IsActive" type="BIT" required>
+  Controls whether the tenant is operational. Only rows where `IsActive = 1` are returned by `TenantConnectionResolver`.
+</ResponseField>
+
+<Warning>
+  Tenants with `IsActive = 0` cannot authenticate. The `TenantConnectionResolver` filters exclusively on active records, so a deactivated tenant will receive a `404 Not Found` response from the login endpoint before any password check occurs.
+</Warning>
+
+## Runtime Tenant Resolution
+
+Every authenticated API request travels through the following resolution chain before any microservice reads from a database.
+
+<Steps>
+  <Step title="Client sends a Bearer token">
+    The browser or API client attaches `Authorization: Bearer <jwt>` to the outbound HTTP request and sends it to the GSM Gateway.
+  </Step>
+
+  <Step title="Gateway validates the JWT">
+    The gateway's JWT middleware validates the signature, issuer, and audience of the token. If validation fails the gateway returns `401 Unauthorized` immediately and the request never reaches a microservice.
+  </Step>
+
+  <Step title="Tenant header injection">
+    `TenantHeaderInjectionMiddleware` runs after JWT validation. It performs two operations atomically:
+
+    1. **Strips** any `X-Company-Id` or `X-Profile-Id` headers that the client may have sent — clients must never be trusted to supply their own tenant identity.
+    2. **Injects** a fresh `X-Company-Id` header derived from the JWT's `companyId` claim, and an `X-Profile-Id` header derived from the `idProfile` claim.
+
+    ```csharp
+    // TenantHeaderInjectionMiddleware.cs
+    context.Request.Headers.Remove(TenantHeaderConstants.CompanyIdHeaderName); // "X-Company-Id"
+    context.Request.Headers.Remove(TenantHeaderConstants.ProfileIdHeaderName); // "X-Profile-Id"
+
+    var companyId = gatewayTenantService.ResolveCompanyId(context.User);
+
+    if (!string.IsNullOrWhiteSpace(companyId))
+    {
+        tenantContext.CompanyId = companyId;
+        context.Request.Headers[TenantHeaderConstants.CompanyIdHeaderName] = companyId;
+    }
+
+    var idProfile = context.User.FindFirst("idProfile")?.Value;
+    if (!string.IsNullOrWhiteSpace(idProfile))
+        context.Request.Headers[TenantHeaderConstants.ProfileIdHeaderName] = idProfile;
+    ```
+  </Step>
+
+  <Step title="YARP forwards the enriched request">
+    The reverse proxy routes the request — now carrying the trusted `X-Company-Id` header — to the appropriate downstream microservice cluster.
+  </Step>
+
+  <Step title="Microservice reads the tenant header">
+    Each microservice's `TenantMiddleware` reads `X-Company-Id` from the incoming request and stores it in its local `TenantContext` for the duration of that request scope.
+  </Step>
+
+  <Step title="Dynamic DbContext is constructed">
+    The microservice's `TenantConnectionResolver` queries `TenantRegistryDb.Tenants` using the `CompanyId` value, builds a connection string from the returned `Server`, `Database`, `DbUser`, and `DbPassword` columns, and instantiates an EF Core `DbContext` bound to that specific tenant database.
+  </Step>
+
+  <Step title="Query executes against the tenant database">
+    All subsequent EF Core queries in the request handler operate entirely within the isolated tenant database.
+  </Step>
+</Steps>
+
+## Fallback for Direct Service Calls
+
+In development it is sometimes useful to call a microservice directly without routing through the gateway. For these scenarios each microservice's `TenantExtensions` logic attempts to read `X-Company-Id` first and, if the header is absent, falls back to the `companyId` JWT claim embedded in the bearer token.
+
+<Note>
+  The JWT-claim fallback is intended only for local development and integration testing. In production all traffic passes through the gateway, which always supplies the verified header.
+</Note>
+
+## TenantContext and TenantMiddleware Pattern
+
+Every microservice in the GSM ecosystem replicates the same lightweight tenant-awareness pattern:
+
+<CardGroup cols={2}>
+  <Card title="TenantContext" icon="database">
+    A scoped service that holds the resolved `CompanyId` string for the current HTTP request. Business logic, repositories, and DbContext factories inject this object to know which tenant they are serving.
+  </Card>
+  <Card title="TenantMiddleware" icon="arrows-split-up-and-left">
+    Registered early in the middleware pipeline. Reads `X-Company-Id` (or falls back to the JWT claim) and populates `TenantContext`. Downstream handlers never parse the header themselves.
+  </Card>
+</CardGroup>
+
+## Adding a New Tenant
+
+<Steps>
+  <Step title="Create the tenant database">
+    On the target SQL Server, create a new database following the naming convention — for example `GSM_{CompanyId}_Db`.
+
+    ```sql
+    CREATE DATABASE GSM_NEWCO_Db;
+    ```
+  </Step>
+
+  <Step title="Run the schema scripts">
+    Apply all tenant schema migrations to the new database. Each microservice ships its own schema script for its domain tables (Users, Employees, Suppliers, etc.).
+  </Step>
+
+  <Step title="Insert the registry row">
+    Add a record to `TenantRegistryDb.Tenants`. Set `IsActive = 1` only when the database and schema are fully ready.
+
+    ```sql
+    INSERT INTO TenantRegistryDb.dbo.Tenants
+        (CompanyId, Server,         Database,       DbUser,   DbPassword,     IsActive)
+    VALUES
+        ('NEWCO',   'sql-server-01', 'GSM_NEWCO_Db', 'sa-app', 'str0ngP@ss',  1);
+    ```
+  </Step>
+
+  <Step title="Seed initial data">
+    Insert the default users, profiles, menu configuration, and any tenant-specific parameters required for the new company to function.
+  </Step>
+
+  <Step title="Set JsonStyles (optional)">
+    Populate the `JsonStyles` column if the tenant requires custom branding. See [Tenant Theming](/multi-tenancy/tenant-theming) for the full JSON structure.
+  </Step>
+</Steps>
+
+<Accordion title="Sample Tenants row for development">
+  ```sql
+  INSERT INTO Tenants (CompanyId, Server, Database, DbUser, DbPassword, IsActive)
+  VALUES ('GSM001', '(localdb)\mssqllocaldb', 'Auth_GSM001_Db', 'sa-demo', 'demo-password', 1);
+  ```
+  This matches the seed row shipped in `tenant-registry.sql`. Use it to bootstrap a local development environment against SQL Server LocalDB.
+</Accordion>

@@ -1,20 +1,70 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "GSM Application: Multi-Tenant Agricultural Operations Platform"
+sidebarTitle: "Home"
+description: "GSM Application is a full-stack, multi-tenant SaaS platform for agricultural operations management, featuring a React SPA, API gateway, and three independent .NET microservices."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+GSM Application is a production-ready, multi-tenant platform designed for agricultural operations — managing herb products, employee assignments, supplier relationships, and harvest transactions. It is built on a **database-per-tenant** architecture where each company (tenant) has its own isolated SQL Server database, resolved dynamically at runtime through a central tenant registry.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Local Setup" icon="laptop" href="/getting-started/local-setup">
+    Get the full stack running locally with Docker Compose in minutes
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Understand the gateway, microservices, and tenant isolation model
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/auth/login">
+    Explore all REST endpoints across Auth, Application, and Operations services
+  </Card>
+  <Card title="Multi-Tenancy" icon="building" href="/multi-tenancy/tenant-model">
+    Learn how tenant resolution, per-tenant databases, and theming work
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## Platform Overview
+
+GSM Application consists of four independently deployable services that work together:
+
+<CardGroup cols={2}>
+  <Card title="GSM Gateway" icon="shield" href="/services/gateway">
+    YARP-based reverse proxy that validates JWT tokens and injects the tenant identity header into every upstream request
+  </Card>
+  <Card title="GSM Auth" icon="key" href="/services/auth">
+    Authentication microservice handling login, logout, and tenant resolution with per-tenant database lookup
+  </Card>
+  <Card title="GSM Application" icon="grid" href="/services/application">
+    Menu, multimedia resources, user management, and configurable API integration rules
+  </Card>
+  <Card title="GSM Operations" icon="leaf" href="/services/operations">
+    Master products, employees, suppliers, categories, SKU definitions, and transaction management
+  </Card>
+</CardGroup>
+
+## Get Running in 3 Steps
+
+<Steps>
+  <Step title="Clone and configure">
+    Copy `.env.example` to `.env` and fill in your SQL Server connection string and JWT secret.
+
+    ```bash
+    cp .env.example .env
+    # Edit .env with your DB_MASTER_URL and JWT_SECRET
+    ```
+  </Step>
+  <Step title="Provision the database">
+    Create the `TenantRegistryDb` database and at least one tenant record. SQL scripts are included in the repository under each service's `readme/` folder.
+  </Step>
+  <Step title="Start all services">
+    Docker Compose builds and starts all five containers — frontend, gateway, and three microservices.
+
+    ```bash
+    docker compose up --build
+    ```
+
+    The frontend is available at [http://localhost:3000](http://localhost:3000).
+  </Step>
+</Steps>
+
+<Note>
+  Each tenant must have its own database pre-created and registered in `TenantRegistryDb.Tenants` before users can log in. See [Database Setup](/getting-started/database-setup) for details.
+</Note>

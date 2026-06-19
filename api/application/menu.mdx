@@ -1,0 +1,128 @@
+---
+title: "Get Application Menu for Authenticated User Profile"
+sidebarTitle: "Menu"
+description: "Retrieve the full menu tree for the currently authenticated user based on their profile ID, which drives navigation in the GSM Application frontend."
+---
+
+The `getMenu` endpoint returns the complete navigation menu structure assigned to the authenticated user's profile. The profile ID (`idProfile`) is automatically extracted from the JWT by the server — clients do not pass it as a parameter. The returned `Menu` field contains a serialized tree of navigation entries that the frontend uses to render the `ModulePage` hierarchy and conditionally display routes based on the user's role.
+
+## Endpoint
+
+```
+GET /api/application/v1/application/getMenu
+```
+
+## Authentication
+
+All requests to this endpoint require a valid Bearer token. The token can be supplied as an `Authorization` header or as the `gsm_token` cookie.
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token obtained during login. Format: `Bearer <token>`
+</ParamField>
+
+> **Note:** The API gateway automatically injects the `X-Company-Id` header from the authenticated session. Clients must never set this header directly.
+
+## Request
+
+This endpoint accepts no query parameters or request body.
+
+## Response
+
+All responses are wrapped in the standard `ApiResponse<T>` envelope:
+
+```json
+{
+  "success": true | false,
+  "message": "string",
+  "data": { ... } | null,
+  "errorType": "string" | null,
+  "traceId": "string" | null,
+  "details": "string" | null
+}
+```
+
+### Response Fields
+
+<ResponseField name="success" type="boolean" required>
+  Indicates whether the request was processed successfully.
+</ResponseField>
+
+<ResponseField name="message" type="string" required>
+  Human-readable status message describing the outcome.
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  The menu object for the authenticated user's profile. `null` on failure.
+
+  <Expandable title="GetMenuDto">
+    <ResponseField name="idProfile" type="integer | null">
+      The numeric ID of the profile associated with the authenticated user. Derived from the JWT claims.
+    </ResponseField>
+
+    <ResponseField name="menu" type="string" required>
+      Serialized menu tree (typically JSON) that encodes all navigation nodes, module pages, and their hierarchy for the user's profile.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="errorType" type="string | null">
+  Present when `success` is `false`. Identifies the category of error (e.g. `Validation`, `NotFound`, `Unauthorized`).
+</ResponseField>
+
+<ResponseField name="traceId" type="string | null">
+  Optional correlation ID for request tracing across services.
+</ResponseField>
+
+<ResponseField name="details" type="string | null">
+  Optional extended error detail message.
+</ResponseField>
+
+## HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200 OK` | Request succeeded. Check `success` field in body to confirm the operation result. |
+| `401 Unauthorized` | The Bearer token is missing, expired, or invalid. |
+
+## Example
+
+### Request
+
+```bash
+curl --request GET \
+  --url https://your-gateway.example.com/api/application/v1/application/getMenu \
+  --header 'Authorization: Bearer <token>'
+```
+
+### Successful Response
+
+```json
+{
+  "success": true,
+  "message": "Menu retrieved successfully.",
+  "data": {
+    "idProfile": 3,
+    "menu": "[{\"moduleId\":1,\"label\":\"Dashboard\",\"path\":\"/dashboard\",\"children\":[]},{\"moduleId\":2,\"label\":\"Operations\",\"path\":\"/operations\",\"children\":[{\"moduleId\":21,\"label\":\"Transactions\",\"path\":\"/operations/transactions\",\"children\":[]}]}]"
+  },
+  "errorType": null,
+  "traceId": "00-4a7b2f3c1e8d9a05-01",
+  "details": null
+}
+```
+
+### Unauthorized Response
+
+```json
+{
+  "success": false,
+  "message": "Unauthorized.",
+  "data": null,
+  "errorType": "Unauthorized",
+  "traceId": "00-4a7b2f3c1e8d9a05-02",
+  "details": null
+}
+```
+
+## Frontend Integration
+
+The `menu` string in the response is parsed by the frontend's `ModulePage` component to dynamically render navigation items. Each node in the tree represents a navigable route or grouping. The structure and depth of the tree depend entirely on the profile configuration managed in the GSM Application back-office.

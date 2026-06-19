@@ -1,0 +1,222 @@
+---
+title: "GSM Frontend Routing, Locale Prefixes & i18n"
+sidebarTitle: Routing & i18n
+description: "How the GSM frontend's React Router v7 route tree works, including locale-prefixed URLs, AuthGuard session checks, and the i18next language-switching setup."
+---
+
+Every URL in the GSM frontend carries a locale segment — `/en/` or `/es/` — immediately after the origin. This design lets the application switch between English and Spanish without a page reload while keeping deep links shareable and bookmarkable. React Router v7 handles the route tree and i18next provides the translation layer.
+
+## Route Tree
+
+The full route structure is defined in `src/App.tsx`. Routes are nested so that locale context, authentication, and the dashboard shell each add their own layer without repeating concerns.
+
+```tsx
+// src/App.tsx — route tree
+<BrowserRouter>
+  <Routes>
+    {/* Root: redirect to the saved locale */}
+    <Route path="/" element={<Navigate to={`/${defaultLocale}/login`} replace />} />
+
+    <Route path="/:locale" element={<LocaleLayout />}>
+      {/* Public */}
+      <Route path="login" element={<LoginPage />} />
+
+      {/* Protected */}
+      <Route element={<AuthGuard />}>
+        <Route path="dashboard" element={<DashboardLayout />}>
+          <Route index element={<DashboardPage />} />
+          <Route path="*" element={<ModulePage />} />
+        </Route>
+
+        {/* Authenticated user on an unknown locale-scoped path */}
+        <Route path="*" element={<NotFound />} />
+      </Route>
+
+      {/* /:locale with no sub-path → /login */}
+      <Route index element={<Navigate to="login" replace />} />
+    </Route>
+
+    {/* No recognisable locale → go to dashboard or login */}
+    <Route
+      path="*"
+      element={
+        <Navigate
+          to={`/${defaultLocale}/${isSessionActive() ? 'dashboard' : 'login'}`}
+          replace
+        />
+      }
+    />
+  </Routes>
+</BrowserRouter>
+```
+
+### Route Summary
+
+| Path | Component | Guard |
+|---|---|---|
+| `/` | Redirect → `/:locale/login` | None |
+| `/:locale/login` | `LoginPage` | None |
+| `/:locale/dashboard` | `DashboardPage` (inside `DashboardLayout`) | `AuthGuard` |
+| `/:locale/dashboard/*` | `ModulePage` (inside `DashboardLayout`) | `AuthGuard` |
+| `/:locale/*` | `NotFound` | `AuthGuard` |
+| `/*` | Redirect → dashboard or login | None |
+
+## Locale Prefix
+
+The supported locale values are `en` (English) and `es` (Spanish). The active locale is determined in order:
+
+1. `getSavedLocale()` reads from `localStorage` under the key `gsm_locale`.
+2. If nothing is stored, it falls back to `en`.
+
+`LocaleLayout` reads the `:locale` param from the URL and calls `i18n.changeLanguage()` so all translation hooks in child components immediately use the correct language. The language switcher on the login page and in the navigation header calls `switchLocale(next, path)` which updates `localStorage` and navigates to the equivalent path under the new locale prefix.
+
+```ts
+// Pseudocode for switchLocale
+function switchLocale(next: Locale, targetPath: string) {
+  localStorage.setItem('gsm_locale', next)
+  i18n.changeLanguage(next)
+  navigate(targetPath)   // e.g. /es/login
+}
+```
+
+## AuthGuard
+
+`AuthGuard` sits between the `/:locale` layout and every protected route. It renders nothing (and redirects to login) if there is no active session, and redirects to the password-change flow if a forced password reset is pending.
+
+```tsx
+// src/shared/components/AuthGuard.tsx
+export default function AuthGuard() {
+  const { locale } = useParams<{ locale: string }>()
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    if (!isSessionActive()) {
+      navigate(`/${locale}/login`, { replace: true })
+      return
+    }
+    if (isPasswordChangeRequired()) {
+      navigate(`/${locale}/change-password`, { replace: true })
+    }
+  }, [locale, navigate])
+
+  if (!isSessionActive()) return null
+  if (isPasswordChangeRequired()) return null
+
+  return <Outlet />
+}
+```
+
+### `isSessionActive()`
+
+Session validity is checked by reading the `gsm_exp` cookie, which holds the JWT expiry timestamp as a Unix integer. The check is purely client-side and never makes a network request.
+
+```ts
+// src/shared/lib/auth.ts
+export function isSessionActive(): boolean {
+  const exp = Cookies.get('gsm_exp')
+  if (!exp) return false
+  return parseInt(exp, 10) > Math.floor(Date.now() / 1000)
+}
+```
+
+<Note>
+  The actual JWT token (`gsm_token`) is stored as an HttpOnly cookie by the backend and is never readable by JavaScript. `gsm_exp` is a separate non-HttpOnly cookie that carries only the expiry timestamp, allowing the frontend to gate navigation without touching the token itself.
+</Note>
+
+## i18next Setup
+
+Translation files live in `messages/` at the project root:
+
+```
+messages/
+├── en.json   # English (default)
+└── es.json   # Spanish
+```
+
+The i18n instance is initialised in `src/app/providers/` before the React tree mounts. Namespaces are flat — all keys live in the default namespace. Nested keys use dot notation, for example `login.title` or `productivity.toast.assignmentCreated`.
+
+### Translation Key Structure
+
+```json
+// messages/en.json (excerpt)
+{
+  "login": {
+    "title": "Sign In",
+    "subtitle": "Enter credentials to access the platform"
+  },
+  "menu": {
+    "productivity": "Productivity",
+    "settings": "Settings"
+  },
+  "productivity": {
+    "title": "Productivity",
+    "tabs": {
+      "assignment": "Assignment",
+      "checkout": "Checkout"
+    }
+  }
+}
+```
+
+Every `useTranslation()` call inside a component automatically switches output when `i18n.changeLanguage()` is called — no unmounting or re-fetching required.
+
+### Language Switcher
+
+The language switcher renders `EN` and `ES` toggle buttons on both the login page (top-right panel) and the dashboard header. Clicking a locale button calls `switchLocale` and navigates to the current equivalent path under the new locale prefix.
+
+<Tip>
+  Adding a new locale requires three changes: add the locale value to the `Locale` type in `src/shared/hooks/useLocale.ts`, create `messages/<locale>.json`, and register the locale with i18next during initialisation.
+</Tip>
+
+## ModulePage: Menu-Driven Navigation
+
+`ModulePage` renders at `/:locale/dashboard/*`, meaning the wildcard `*` segment captures any sub-path under dashboard. It uses that captured slug to look up the matching menu option from the menu tree returned by the application API (`GET /api/application/v1/application/getMenu`).
+
+```tsx
+// src/pages/ModulePage.tsx — resolution logic
+const { '*': slug = '' } = useParams()
+const { menuOptions } = useOutletContext<DashboardOutletCtx>()
+
+const option = menuOptions.find(o => o.Route?.endsWith(`/${slug}`))
+
+if (option?.ExternalRoute) {
+  return <ExternalPage url={option.ExternalRoute} activeType={option.ActiveType} title={option.Description} />
+}
+
+const Component = modules[slug]
+if (Component) {
+  return <Suspense fallback={<LoadingSkeleton />}><Component /></Suspense>
+}
+
+return option ? <ComingSoon title={slugToTitle(slug)} /> : <NotFound />
+```
+
+The built-in module registry maps slug strings to lazily loaded React components:
+
+| Slug | Component |
+|---|---|
+| `productivity` | `features/productivity/ProductivityPage` |
+| `operations/products` | `features/products/ProductsPage` |
+| `resources` | `features/resources/ResourcesPage` |
+| `sop` | `features/sop/SopPage` |
+| `settings` | `features/settings/SettingsPage` |
+
+Menu options with an `ExternalRoute` value bypass the component registry entirely and are handed off to `ExternalPage`, which delegates to `IframeRenderer`, `NhBiRenderer`, or `NewTabRenderer` based on the `ActiveType` field.
+
+## Sidebar & Menu API
+
+The `Sidebar` component in `src/layouts/shell/Sidebar.tsx` is populated by the `useMenu()` hook, which calls `GET /api/application/v1/application/getMenu` via the Orval-generated `useGetMenu` hook. The response is a JSON-encoded menu string that `useMenu` parses into a normalised `MenuOption[]` tree.
+
+```ts
+// src/shared/hooks/useMenu.ts — simplified
+const { data: rawItems } = useGetMenu({
+  query: {
+    queryKey:  ['menu'],
+    staleTime: 5 * 60 * 1000,   // cache for 5 minutes
+    enabled:   isSessionActive(),
+    select:    (response) => parseMenu(response.data?.menu ?? ''),
+  },
+})
+```
+
+Menu items are sorted alphabetically with the Dashboard/Home item always first. Items flagged `IsShortcut: true` are surfaced as quick-access cards on the Dashboard home screen. Items with `Section: 'others'` are rendered in the lower "Others" group in the sidebar rather than the main navigation group.

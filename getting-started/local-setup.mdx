@@ -1,0 +1,169 @@
+---
+title: "Run GSM Application Locally with Docker Compose"
+sidebarTitle: "Local Setup"
+description: "Step-by-step guide to cloning the repo, configuring secrets, provisioning tenant databases, and starting all five services with a single Docker Compose command."
+---
+
+Running GSM Application locally requires Docker, an accessible SQL Server instance, and about ten minutes for the initial image build. The full stack — frontend, gateway, and three microservices — is defined in a single `docker-compose.yml` at the repository root, so a single command brings everything up once the environment and databases are ready.
+
+## Prerequisites
+
+Before you begin, make sure the following are available on your machine:
+
+- **Docker Desktop** 4.x or later (includes Docker Compose v2). Verify with `docker compose version`.
+- **SQL Server** — either a local SQL Server instance, SQL Server Express, Azure SQL, or a Docker-hosted SQL Server container accessible from your machine. The services use `TrustServerCertificate=True` so a self-signed certificate is fine.
+- **Git** to clone the repository.
+
+<Warning>
+  The SQL Server instance must be reachable from inside the Docker containers, not just from your localhost. If SQL Server is running natively on your machine, use your machine's LAN IP address (e.g., `192.168.1.x`) or `host.docker.internal` (Docker Desktop on Windows/macOS) in the connection string — `localhost` inside a container refers to the container itself.
+</Warning>
+
+## Setup Steps
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the GSM Application monorepo and navigate to the root directory where `docker-compose.yml` lives.
+
+    ```bash
+    git clone https://github.com/ti-infinite/GSMApplication.git
+    cd GSMApplication
+    ```
+  </Step>
+
+  <Step title="Create and configure your .env file">
+    Copy the provided example file to `.env`. This file is read by Docker Compose at startup to inject secrets into each container.
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    Open `.env` in your editor. The file looks like this out of the box:
+
+    ```ini
+    # JWT secret — debe ser igual en todos los servicios
+    JWT_SECRET=
+
+    # Cadena de conexion al SQL Server de tenants
+    DB_MASTER_URL=Server=YOUR_SERVER;User ID=YOUR_USER;Password=YOUR_PASSWORD;Database=MasterTenant;TrustServerCertificate=True
+
+    # Configuracion de tenants del frontend (build-time)
+    VITE_TENANT_DEFAULT=IH001
+    VITE_TENANT_IDS=IH001,AG001
+    ```
+
+    Fill in the two required values:
+
+    - **`JWT_SECRET`** — choose a long random string (at least 32 characters). Every service shares this secret to sign and validate JWTs, so it must be identical across all containers.
+    - **`DB_MASTER_URL`** — replace `YOUR_SERVER`, `YOUR_USER`, and `YOUR_PASSWORD` with your SQL Server connection details. The `Database` field should be `TenantRegistryDb` (the registry database you will create in the next step).
+
+    Example with real values:
+
+    ```ini
+    JWT_SECRET=s3cur3-gsm-jwt-s3cr3t-key-change-this-2026!
+
+    DB_MASTER_URL=Server=192.168.1.50,1433;User ID=sa;Password=MyP@ss!;Database=TenantRegistryDb;TrustServerCertificate=True
+
+    VITE_TENANT_DEFAULT=IH001
+    VITE_TENANT_IDS=IH001,AG001
+    ```
+
+    <Tip>
+      `VITE_TENANT_DEFAULT` and `VITE_TENANT_IDS` are baked into the frontend image at Docker build time. If you add or change tenant IDs after the first build, you must rebuild the `frontend` image with `docker compose build frontend`.
+    </Tip>
+  </Step>
+
+  <Step title="Provision the tenant registry and tenant databases">
+    Before the microservices can start, the `TenantRegistryDb` database must exist and contain at least one active tenant row. Follow the [Database Setup guide](/getting-started/database-setup) to:
+
+    1. Create `TenantRegistryDb` and the `Tenants` table.
+    2. Create at least one tenant database (e.g., `Auth_IH001_Db`) with the `Users` table.
+    3. Insert a row into `Tenants` pointing to that tenant database.
+
+    The `gsmauth` service will fail its health check and the gateway will not start if `TenantRegistryDb` does not exist or `DB_MASTER_URL` is incorrect.
+  </Step>
+
+  <Step title="Build images and start all services">
+    From the repository root, run:
+
+    ```bash
+    docker compose up --build
+    ```
+
+    Docker Compose will build all five images in parallel and then start them in dependency order:
+
+    1. `gsmauth`, `gsmapplication`, and `gsmoperations` start first.
+    2. `gateway` starts only after all three microservices report healthy.
+    3. `frontend` starts only after `gateway` reports healthy.
+
+    On first build, expect 3–5 minutes for the .NET SDK and npm dependency layers. Subsequent builds use the Docker layer cache and are much faster.
+
+    To run the stack in the background:
+
+    ```bash
+    docker compose up --build -d
+    ```
+  </Step>
+
+  <Step title="Verify all services are healthy">
+    Once the stack is running, confirm each service is reachable:
+
+    **Frontend SPA**
+
+    ```
+    http://localhost:3000
+    ```
+
+    You should see the GSM Application login page. The locale prefix (`/en/` or `/es/`) will be applied automatically based on browser language.
+
+    **Gateway health endpoint**
+
+    ```bash
+    curl http://localhost/api/health
+    ```
+
+    Expected response: `200 OK` with a health status body.
+
+    **Check individual microservice health through the gateway**
+
+    The microservices are not directly exposed, but you can verify them via Docker:
+
+    ```bash
+    docker compose ps
+    ```
+
+    All five services should show `healthy` in the `STATUS` column. If any show `starting` or `unhealthy`, check logs:
+
+    ```bash
+    docker compose logs gsmauth --tail=50
+    docker compose logs gateway --tail=50
+    ```
+  </Step>
+</Steps>
+
+## Service URLs at a Glance
+
+| Service | URL | Notes |
+|---|---|---|
+| Frontend | `http://localhost:3000` | React SPA, served by Nginx |
+| Gateway | `http://localhost:80` | Single entry point for all API calls |
+| Gateway health | `http://localhost/api/health` | |
+| Login endpoint | `http://localhost/api/security/v1/auth/login` | Proxied to `gsmauth` |
+| Application API | `http://localhost/api/application/v1/application/getMenu` | Requires Bearer token |
+| Operations API | `http://localhost/api/operations/...` | Requires Bearer token |
+
+<Note>
+  The microservices (`gsmauth:8081`, `gsmapplication:8082`, `gsmoperations:8083`) are only accessible within the `gsm-network` Docker bridge. They are not bound to any host port intentionally — all traffic must flow through the gateway.
+</Note>
+
+## Stopping and Cleaning Up
+
+```bash
+# Stop all containers
+docker compose down
+
+# Stop and remove volumes (useful for a clean re-provision)
+docker compose down -v
+
+# Rebuild a single service after a code change
+docker compose up --build gsmauth -d
+```

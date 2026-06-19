@@ -1,0 +1,58 @@
+---
+title: "GSM Application: Multi-Tenant Agricultural Operations Platform"
+sidebarTitle: "Introduction"
+description: "GSM Application is a multi-tenant SaaS platform for agricultural operations, built on a microservices architecture with per-tenant database isolation and a React frontend."
+---
+
+GSM Application is a production-grade SaaS platform designed for agricultural operations companies that need strict data isolation between tenants. Each company (tenant) gets its own dedicated SQL Server database, ensuring that crop records, field operations, and user data are never commingled. The platform is composed of a React single-page application, a YARP-based API gateway, and three .NET microservices — all orchestrated with Docker Compose and deployable to any environment that can run containers.
+
+The system is built around a **CompanyId** claim that flows through every authenticated request. After a successful login, the gateway validates the JWT, extracts the `companyId` claim, and injects it as an `X-Company-Id` header before forwarding the request downstream. Microservices never trust a client-supplied company identifier — they rely exclusively on the gateway-injected header, which means tenant routing is enforced at the network boundary rather than in application code.
+
+## Key Capabilities
+
+<CardGroup cols={2}>
+  <Card title="Database-Per-Tenant Isolation" icon="database">
+    Every company gets its own SQL Server database, resolved at runtime through a central `TenantRegistryDb`. No cross-tenant queries are possible by design.
+  </Card>
+  <Card title="YARP API Gateway" icon="shield-halved">
+    A single entry point validates JWTs, strips client-supplied tenant headers, and routes requests to the correct microservice cluster based on URL path prefix.
+  </Card>
+  <Card title="Agricultural Operations Domain" icon="tractor">
+    Core microservices cover authentication (`gsmauth`), application metadata like menus and profiles (`gsmapplication`), and field operations (`gsmoperations`).
+  </Card>
+  <Card title="Internationalised React SPA" icon="globe">
+    The Vite + React 19 frontend supports English and Spanish via i18next, with client-side routing prefixed by locale (`/en/`, `/es/`).
+  </Card>
+</CardGroup>
+
+## Platform Overview
+
+The platform ships as five Docker containers that communicate over a private bridge network (`gsm-network`). The frontend is a compiled static bundle served by Nginx; the backend services are ASP.NET Core 8 applications. There is no service mesh or sidecar — the gateway handles all cross-cutting concerns including JWT validation, tenant header injection, and health checking.
+
+<CardGroup cols={2}>
+  <Card title="System Architecture" icon="sitemap" href="/architecture">
+    Understand the five-container topology, YARP route table, JWT flow, and the tenant registry pattern.
+  </Card>
+  <Card title="Local Setup" icon="laptop-code" href="/getting-started/local-setup">
+    Clone the repo, configure your `.env` file, provision databases, and run the full stack with a single `docker compose up --build`.
+  </Card>
+  <Card title="Environment Variables" icon="sliders" href="/getting-started/environment-variables">
+    Complete reference for every environment variable used across all services, including YARP cluster addresses and JWT settings.
+  </Card>
+  <Card title="Database Setup" icon="server" href="/getting-started/database-setup">
+    Provision the central tenant registry and create per-tenant databases with the correct schema for password hashing.
+  </Card>
+</CardGroup>
+
+## Who Is GSM Application For?
+
+GSM Application targets agricultural operations businesses that:
+
+- Operate multiple companies or subsidiaries under one platform deployment
+- Require strict regulatory or contractual data segregation between tenants
+- Need a centrally managed authentication service with per-tenant user stores
+- Want a containerised, cloud-portable stack deployable to AWS, Azure, or on-premises infrastructure
+
+<Tip>
+  The frontend is deployed to AWS S3 + CloudFront via GitHub Actions. The `main`, `quality`, and `develop` branches map to `frontend-prod`, `frontend-qa`, and `frontend-dev` environments respectively, each with its own S3 bucket and CloudFront distribution.
+</Tip>

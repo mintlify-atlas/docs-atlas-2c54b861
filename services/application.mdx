@@ -1,0 +1,188 @@
+---
+title: "GSMApplication: Menu, Media, Users, and API Rules Service"
+sidebarTitle: "Application Service"
+description: "Reference for the GSMApplication microservice — per-profile menu trees, multimedia resources, user password management, and tenant-scoped API rule configuration."
+---
+
+GSMApplication is the configuration and presentation layer of the GSM Application platform. It is responsible for providing each authenticated user with the correct navigation menu for their profile, serving multimedia resources to the UI, managing user password updates, and maintaining the per-tenant API rule definitions that drive the integration engine in GSMOperations. Because this service operates within the multi-tenant architecture, every request resolves its tenant database via the `X-Company-Id` header injected by the gateway before any data is read or written.
+
+## Layer Structure
+
+<CardGroup cols={2}>
+  <Card title="GSMApplication.Api" icon="server">
+    HTTP controllers: `ApplicationController`, `UsersController`, and `IntegrationsController`.
+  </Card>
+  <Card title="GSMApplication.Business" icon="briefcase">
+    Service implementations for menu retrieval, multimedia lookup, user management, and API rule CRUD.
+  </Card>
+  <Card title="GSMApplication.Abstractions" icon="file-contract">
+    Interfaces that decouple controller logic from business implementations via dependency inversion.
+  </Card>
+  <Card title="GSMApplication.Entities" icon="cube">
+    DTOs: `GetMenuDto`, `MultimediaResourceDto`, `ApiRuleDTO`, `UpdateUserPasswordDTO`, and shared response wrappers.
+  </Card>
+  <Card title="GSMApplication.DataAccess" icon="database">
+    EF Core contexts for the registry database and the dynamic tenant database.
+  </Card>
+  <Card title="GSMApplication.Infrastructure" icon="building">
+    Concrete repository implementations and cross-cutting infrastructure concerns.
+  </Card>
+  <Card title="GSMApplication.Tenant" icon="users">
+    `TenantContext` and tenant middleware. Reads `X-Company-Id` from gateway-forwarded headers, with a JWT-claim fallback for local development.
+  </Card>
+</CardGroup>
+
+The service listens on **port 8082** and is reached through the gateway at the `/api/application/**` prefix.
+
+## Endpoints
+
+### `GET /api/v1/application/getMenu`
+
+Returns the navigation menu tree for the authenticated user's profile. This endpoint requires a valid Bearer token; the `idProfile` claim is extracted from the JWT (with a fallback to `ClaimTypes.Role` for temporary compatibility) to select the correct menu definition.
+
+**Request:** No body. The `Authorization: Bearer` header is required.
+
+**Response:**
+
+<ResponseField name="idProfile" type="integer | null">
+  The numeric profile identifier associated with the returned menu definition.
+</ResponseField>
+
+<ResponseField name="menu" type="string">
+  The serialized menu structure for the profile. Deserialize this on the client to build the navigation tree.
+</ResponseField>
+
+**Status codes:**
+
+| Status | Condition |
+|---|---|
+| `200 OK` | Profile resolved successfully; menu returned. |
+| `401 Unauthorized` | Bearer token is missing, expired, or does not carry a resolvable `idProfile` claim. |
+
+---
+
+### `GET /api/v1/application/getMediaResources`
+
+Returns a list of multimedia resources filtered by one or more category names. Used by the front end to load images, videos, or configuration blobs associated with specific UI sections.
+
+**Query parameters:**
+
+<ParamField query="categories" type="string[]" required>
+  One or more resource category identifiers. Passed as repeated query string parameters, e.g. `?categories=hero&categories=banner`. At least one value is required; an empty list returns a `400 Validation` error.
+</ParamField>
+
+**Response item shape:**
+
+<ResponseField name="resourceCategory" type="string">
+  The category string that this resource belongs to.
+</ResponseField>
+
+<ResponseField name="resourceOrder" type="integer">
+  Sort order within the category. Lower values appear first.
+</ResponseField>
+
+<ResponseField name="config" type="string">
+  A JSON or plain-text configuration payload specific to the resource (e.g. URL, alt text, display options).
+</ResponseField>
+
+---
+
+### `PUT /api/v1/users/{idUser}/password`
+
+Updates the PBKDF2 password hash and salt for a specific user in the tenant database. This endpoint is used to implement password change flows — it does not require the old password on the HTTP layer; that guard belongs in the calling business logic.
+
+<ParamField path="idUser" type="guid" required>
+  The `IdUser` GUID of the user whose password is being updated.
+</ParamField>
+
+<ParamField body="UpdateUserPasswordDTO" type="object" required>
+  Request body containing the new password hash and salt values to persist.
+</ParamField>
+
+---
+
+### `GET /api/v1/integrations/api-rules`
+
+Returns all API rule records defined for the current tenant.
+
+### `GET /api/v1/integrations/api-rules/{idApiRule}`
+
+Returns a single API rule by its integer identifier.
+
+<ParamField path="idApiRule" type="integer" required>
+  Primary key of the `ApiRule` record.
+</ParamField>
+
+### `POST /api/v1/integrations/api-rules`
+
+Creates a new API rule for the current tenant.
+
+<ParamField body="shortName" type="string" required>
+  A brief, unique identifier for the rule used when executing it from GSMOperations.
+</ParamField>
+
+<ParamField body="descr" type="string">
+  Optional human-readable description of what the rule does.
+</ParamField>
+
+<ParamField body="urlEndPoint" type="string" required>
+  The target endpoint URL that the integration engine will call when the rule is executed.
+</ParamField>
+
+<ParamField body="operation" type="string" required>
+  The HTTP method or operation type that the rule executes (e.g. `GET`, `POST`).
+</ParamField>
+
+### `PUT /api/v1/integrations/api-rules/{idApiRule}`
+
+Updates an existing API rule.
+
+<ParamField path="idApiRule" type="integer" required>
+  The ID of the rule to update.
+</ParamField>
+
+The body shape is identical to the `POST` endpoint above.
+
+### `DELETE /api/v1/integrations/api-rules/{idApiRule}`
+
+Permanently removes an API rule from the tenant database.
+
+<ParamField path="idApiRule" type="integer" required>
+  The ID of the rule to delete.
+</ParamField>
+
+## API Rules
+
+API rules are tenant-scoped configuration records that tell the GSMOperations integration engine where to call and how to call it when an external integration is triggered. Each rule links a `ShortName` (used as a key in the operations layer) to a `UrlEndPoint` and an `Operation` type. Rules are managed exclusively through GSMApplication and executed through GSMOperations — the two services together form the configurable integration pipeline.
+
+<Accordion title="ApiRuleDTO field reference">
+  ```csharp
+  public sealed class ApiRuleDTO
+  {
+      public required string ShortName   { get; set; }
+      public          string? Descr      { get; set; }
+      public required string UrlEndPoint { get; set; }
+      public required string Operation   { get; set; }
+  }
+  ```
+</Accordion>
+
+## Multi-Tenant Behavior
+
+Every request to GSMApplication resolves its tenant before executing any business logic:
+
+<Steps>
+  <Step title="Header read">
+    The `TenantMiddleware` reads `X-Company-Id` from the incoming request headers. This header is injected by the gateway from the validated JWT's `companyId` claim.
+  </Step>
+  <Step title="JWT fallback (development only)">
+    If `X-Company-Id` is absent (direct service call in a local environment), the middleware falls back to reading the `companyId` claim from the Bearer JWT. This fallback is not available in production where all traffic flows through the gateway.
+  </Step>
+  <Step title="Dynamic DbContext">
+    `TenantContext.CompanyId` is populated and the per-request EF Core `DbContext` is constructed against the tenant's isolated SQL Server database.
+  </Step>
+</Steps>
+
+<Note>
+  The `getMenu` endpoint reads `idProfile` from the `X-Profile-Id` header (also injected by the gateway) rather than making an additional database call, keeping menu resolution fast and allocation-free.
+</Note>
