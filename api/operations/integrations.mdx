@@ -1,7 +1,7 @@
 ---
 title: "Execute External API via GSM Operations Integration Engine"
 sidebarTitle: "Integrations"
-description: "Invoke any pre-configured API rule from the GSM Application service through the exec-api integration engine, proxying calls to external endpoints with custom headers and payloads."
+description: "Invoke pre-configured API rules through the GSM Operations exec-api engine to proxy calls to external endpoints with custom headers and body."
 ---
 
 The `exec-api` endpoint is the GSM Operations integration engine. It resolves and executes calls to external systems using the API rule configuration stored in the GSM Application service (see [API Rules](/api/application/api-rules)). Rather than requiring clients to know external endpoint URLs or credentials, `exec-api` accepts a `UrlEndPoint`, an `Operation`, and an optional set of headers, parameters, and a body — and dispatches the HTTP request on behalf of the caller. This centralises external integrations, enforces tenant isolation, and allows rules to be updated without client-side changes.

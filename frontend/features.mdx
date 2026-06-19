@@ -108,7 +108,11 @@ The Checkout view shows cards for every active `INPROGRESS` transaction. It uses
 ```ts
 // Persistence on reload — restores state from the backend
 async function loadActiveCheckout(): Promise<UnitCheckout[]> {
-  const res = await getTransaction({ trxPrefix: 'PRDLBR', status: 'INPROGRESS' })
+  const res = await getTransaction({
+    trxPrefix: 'PRDLBR',
+    status:    'INPROGRESS',
+    location:  getStoredUser()?.location ?? undefined,
+  })
   return mapTrxToUnits(res.data?.data ?? [])
 }
 ```

@@ -1,7 +1,7 @@
 ---
-title: "GSM Application: Multi-Tenant Agricultural Operations Platform"
+title: "GSM Application: Multi-Tenant Agricultural SaaS Platform"
 sidebarTitle: "Introduction"
-description: "GSM Application is a multi-tenant SaaS platform for agricultural operations, built on a microservices architecture with per-tenant database isolation and a React frontend."
+description: "GSM Application is a multi-tenant SaaS platform for agricultural operations with per-tenant database isolation, a React frontend, and .NET microservices."
 ---
 
 GSM Application is a production-grade SaaS platform designed for agricultural operations companies that need strict data isolation between tenants. Each company (tenant) gets its own dedicated SQL Server database, ensuring that crop records, field operations, and user data are never commingled. The platform is composed of a React single-page application, a YARP-based API gateway, and three .NET microservices — all orchestrated with Docker Compose and deployable to any environment that can run containers.
@@ -11,16 +11,16 @@ The system is built around a **CompanyId** claim that flows through every authen
 ## Key Capabilities
 
 <CardGroup cols={2}>
-  <Card title="Database-Per-Tenant Isolation" icon="database">
+  <Card title="Database-Per-Tenant Isolation" icon="database" href="/multi-tenancy/tenant-model">
     Every company gets its own SQL Server database, resolved at runtime through a central `TenantRegistryDb`. No cross-tenant queries are possible by design.
   </Card>
-  <Card title="YARP API Gateway" icon="shield-halved">
+  <Card title="YARP API Gateway" icon="shield-halved" href="/services/gateway">
     A single entry point validates JWTs, strips client-supplied tenant headers, and routes requests to the correct microservice cluster based on URL path prefix.
   </Card>
-  <Card title="Agricultural Operations Domain" icon="tractor">
+  <Card title="Agricultural Operations Domain" icon="tractor" href="/services/operations">
     Core microservices cover authentication (`gsmauth`), application metadata like menus and profiles (`gsmapplication`), and field operations (`gsmoperations`).
   </Card>
-  <Card title="Internationalised React SPA" icon="globe">
+  <Card title="Internationalised React SPA" icon="globe" href="/frontend/overview">
     The Vite + React 19 frontend supports English and Spanish via i18next, with client-side routing prefixed by locale (`/en/`, `/es/`).
   </Card>
 </CardGroup>

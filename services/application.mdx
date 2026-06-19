@@ -1,7 +1,7 @@
 ---
 title: "GSMApplication: Menu, Media, Users, and API Rules Service"
 sidebarTitle: "Application Service"
-description: "Reference for the GSMApplication microservice — per-profile menu trees, multimedia resources, user password management, and tenant-scoped API rule configuration."
+description: "Reference for GSMApplication — per-profile menu trees, multimedia resources, user password management, and tenant-scoped API rule configuration."
 ---
 
 GSMApplication is the configuration and presentation layer of the GSM Application platform. It is responsible for providing each authenticated user with the correct navigation menu for their profile, serving multimedia resources to the UI, managing user password updates, and maintaining the per-tenant API rule definitions that drive the integration engine in GSMOperations. Because this service operates within the multi-tenant architecture, every request resolves its tenant database via the `X-Company-Id` header injected by the gateway before any data is read or written.
@@ -38,7 +38,7 @@ The service listens on **port 8082** and is reached through the gateway at the `
 
 ### `GET /api/v1/application/getMenu`
 
-Returns the navigation menu tree for the authenticated user's profile. This endpoint requires a valid Bearer token; the `idProfile` claim is extracted from the JWT (with a fallback to `ClaimTypes.Role` for temporary compatibility) to select the correct menu definition.
+Returns the navigation menu tree for the authenticated user's profile. This endpoint requires a valid Bearer token. The profile identifier is read from the `X-Profile-Id` request header, which the gateway injects from the JWT's `idProfile` claim before forwarding the request.
 
 **Request:** No body. The `Authorization: Bearer` header is required.
 
@@ -89,14 +89,18 @@ Returns a list of multimedia resources filtered by one or more category names. U
 
 ### `PUT /api/v1/users/{idUser}/password`
 
-Updates the PBKDF2 password hash and salt for a specific user in the tenant database. This endpoint is used to implement password change flows — it does not require the old password on the HTTP layer; that guard belongs in the calling business logic.
+Updates the password for a specific user in the tenant database. The caller supplies the current password for verification and the desired new password; the service handles hashing internally.
 
 <ParamField path="idUser" type="guid" required>
   The `IdUser` GUID of the user whose password is being updated.
 </ParamField>
 
-<ParamField body="UpdateUserPasswordDTO" type="object" required>
-  Request body containing the new password hash and salt values to persist.
+<ParamField body="OldPassword" type="string" required>
+  The user's current plaintext password. Used to verify identity before the update is applied.
+</ParamField>
+
+<ParamField body="NewPassword" type="string" required>
+  The new plaintext password to set. The service hashes this value before persisting it.
 </ParamField>
 
 ---
@@ -153,7 +157,7 @@ Permanently removes an API rule from the tenant database.
 
 ## API Rules
 
-API rules are tenant-scoped configuration records that tell the GSMOperations integration engine where to call and how to call it when an external integration is triggered. Each rule links a `ShortName` (used as a key in the operations layer) to a `UrlEndPoint` and an `Operation` type. Rules are managed exclusively through GSMApplication and executed through GSMOperations — the two services together form the configurable integration pipeline.
+API rules are tenant-scoped configuration records that store the target URL and HTTP method for each named integration. Each rule carries a `ShortName` for human identification, a `UrlEndPoint`, and an `Operation` type. The frontend retrieves a rule's `UrlEndPoint` and `Operation` values from this service, then passes them directly to `GSMOperations /api/v1/integrations/exec-api` to trigger the outbound call. Rules are managed exclusively through GSMApplication — the two services together form the configurable integration pipeline.
 
 <Accordion title="ApiRuleDTO field reference">
   ```csharp

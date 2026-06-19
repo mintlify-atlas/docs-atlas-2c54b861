@@ -1,7 +1,7 @@
 ---
 title: "Transaction Lifecycle Endpoints for GSM Operations"
 sidebarTitle: "Transactions"
-description: "Create, update, and search GSM Operations transactions with full support for attributes, products, states, and detail lines across the transaction lifecycle."
+description: "Create, update, and search GSM Operations transactions with attributes, products, states, and typed detail lines across the full transaction lifecycle."
 ---
 
 Transactions are the core operational record in the GSM Operations service. Each transaction is identified by a `TrxPrefix` that encodes the business context — for example, `PRDLBR` indicates a productivity-labor transaction. A transaction progresses through a defined lifecycle: it is initially **CREATED**, transitions to **INPROGRESS** when work begins, and is ultimately resolved as either **COMPLETED** or **CANCELLED**. State changes are recorded as entries in the `TrxStates` collection, providing a complete audit trail.

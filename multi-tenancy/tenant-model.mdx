@@ -51,7 +51,7 @@ CREATE TABLE Tenants (
 </ResponseField>
 
 <Warning>
-  Tenants with `IsActive = 0` cannot authenticate. The `TenantConnectionResolver` filters exclusively on active records, so a deactivated tenant will receive a `404 Not Found` response from the login endpoint before any password check occurs.
+  Tenants with `IsActive = 0` cannot authenticate. The `TenantConnectionResolver` filters exclusively on active records, so a deactivated tenant returns `null` from the resolver, which causes the login endpoint to return `401 Unauthorized` (with an "invalid credentials" message) before any password check occurs.
 </Warning>
 
 ## Runtime Tenant Resolution

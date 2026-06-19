@@ -84,11 +84,11 @@ Orval reads `orval.config.ts` and writes to `src/shared/api/`:
 
 | Config key | Input spec | Output directory | Mutator |
 |---|---|---|---|
-| `gsmAuth` | `swagger/gsm-auth.json` | `src/shared/api/auth/` | `authFetch` |
 | `gsmApplication` | `swagger/gsm-application.json` | `src/shared/api/application/` | `applicationFetch` |
+| `gsmAuth` | `swagger/gsm-auth.json` | `src/shared/api/auth/` | `authFetch` |
 | `gsmOperations` | `swagger/gsm-operations.json` | `src/shared/api/operations/` | `operationsFetch` |
 
-Each generator uses `mode: 'tags-split'` so hooks are grouped by OpenAPI tag into separate files. All hooks are wrapped by a custom mutator function defined in `src/shared/lib/fetcher.ts` that attaches credentials and handles auth errors globally.
+Each generator uses `mode: 'tags-split'` so hooks are grouped by OpenAPI tag into separate files. The `gsmOperations` generator additionally filters to only the `Integrations` and `Operations` tags from the spec. All hooks are wrapped by a custom mutator function defined in `src/shared/lib/fetcher.ts` that attaches credentials and handles auth errors globally.
 
 <Note>
   Re-run `npm run generate` whenever a backend OpenAPI spec changes. The generated files under `src/shared/api/` are committed to source control so the CI build does not require a live backend.
@@ -120,7 +120,7 @@ server: {
 | `vendor-router` | `react-router-dom` |
 | `vendor-query` | `@tanstack/react-query` |
 | `vendor-i18n` | `i18next`, `react-i18next` |
-| `vendor-ui` | `lucide-react`, all `@radix-ui/*` packages |
+| `vendor-ui` | `lucide-react`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-dialog`, `@radix-ui/react-tooltip`, `@radix-ui/react-slot` |
 | `vendor-utils` | `clsx`, `tailwind-merge`, `class-variance-authority`, `js-cookie` |
 
 ## Local Development

@@ -1,7 +1,7 @@
 ---
-title: "Per-Tenant CSS Theming with JsonStyles in GSM"
+title: "Per-Tenant CSS Theming via JsonStyles in GSM Application"
 sidebarTitle: "Tenant Theming"
-description: "How GSM Application loads, validates, and applies per-company CSS variable themes stored as JSON in the Tenants registry table."
+description: "How GSM Application fetches, validates, and applies per-company CSS variable themes stored as a JSON string in the Tenants registry table."
 ---
 
 GSM Application delivers a fully branded experience to every tenant without shipping separate front-end builds. Each row in `TenantRegistryDb.Tenants` carries a `JsonStyles` column that encodes a complete design system — light palette, dark palette, and identity metadata — as a single JSON string. When a user types their company identifier on the login page, the frontend fetches that JSON, sanitizes it, and injects scoped CSS variables before the first pixel is painted.

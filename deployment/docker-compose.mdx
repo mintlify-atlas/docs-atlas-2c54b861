@@ -13,12 +13,12 @@ The stack contains five services, all joined to the same bridge network `gsm-net
 | Service | Internal port | Published port | Health-check endpoint |
 |---|---|---|---|
 | `frontend` | 80 | **3000** | *(none — depends on gateway health)* |
-| `gateway` | 80 | **80** | `GET http://localhost:80/api/health` |
+| `gateway` | 80 | *(not published)* | `GET http://localhost:80/api/health` |
 | `gsmauth` | 8081 | *(not published)* | `GET http://localhost:8081/health` |
 | `gsmapplication` | 8082 | *(not published)* | `GET http://localhost:8082/health` |
 | `gsmoperations` | 8083 | *(not published)* | `GET http://localhost:8083/health` |
 
-The three microservices are not exposed on the host directly; all external traffic enters through the gateway on port 80 and is forwarded to the appropriate service by YARP.
+None of the backend services, including the gateway, expose ports directly on the host. All external traffic enters through the **frontend** nginx container on host port **3000**, which proxies API requests internally to the gateway on `http://gateway:80` within the `gsm-network` bridge network. The gateway then routes each request to the appropriate microservice via YARP.
 
 ## Service Dependency Chain
 

@@ -39,7 +39,7 @@ on:
 ```
 
 - **Push to `develop`** — fires when files in the service's directory are modified directly on the branch.
-- **Pull request merged to `develop` or `main`** — the `types: [closed]` combined with `github.event.pull_request.merged == true` ensures the deploy only runs on actual merges, not on PR closures without a merge.
+- **Pull request closed against `develop` or `main`** — the `types: [closed]` trigger fires on both merges and non-merge closures. The **frontend** workflow guards against non-merge closures with an additional `github.event.pull_request.merged == true` condition on its `deploy` job; the **backend** workflows rely on the `WORKFLOW_BACKEND_ENABLED` flag and do not add a separate merged check.
 - **Manual `workflow_dispatch`** — allows targeting any environment by entering `dev`, `qa`, or `prod` in the GitHub Actions UI.
 
 ## Branch → Environment Mapping

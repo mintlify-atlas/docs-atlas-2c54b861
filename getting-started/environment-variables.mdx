@@ -42,10 +42,14 @@ These variables are consumed by multiple services and must have the same value i
 
 ## JWT Settings
 
-These variables configure the JWT token parameters. They are set per-service in `docker-compose.yml` and match the `JwtSettings` section of each service's `appsettings.json`.
+These variables configure the JWT token parameters. They are set as environment variables in `docker-compose.yml` for `gsmauth`, `gsmapplication`, and `gsmoperations`. The `gateway` reads `JwtSettings.Issuer` and `JwtSettings.Audience` from its own `appsettings.json` (hardcoded to `GSMAuth` and `GSMClients`), so those two variables are **not** passed to the gateway container via the environment.
 
 <ParamField body="JwtSettings__Issuer" type="string">
-  The `iss` claim written into every JWT by `gsmauth` and validated by all services. The double-underscore (`__`) is the ASP.NET Core convention for nested configuration keys.
+  The `iss` claim written into every JWT by `gsmauth` and validated by `gsmapplication` and `gsmoperations`. The double-underscore (`__`) is the ASP.NET Core convention for nested configuration keys.
+
+  <Note>
+    The `gateway` does **not** consume this as an environment variable. Its issuer value is read from `appsettings.json` (`"Issuer": "GSMAuth"`). Only the three microservices receive this variable via `docker-compose.yml`.
+  </Note>
 
   **Default:** `GSMAuth`
 
@@ -56,7 +60,11 @@ These variables configure the JWT token parameters. They are set per-service in 
 </ParamField>
 
 <ParamField body="JwtSettings__Audience" type="string">
-  The `aud` claim written into every JWT and validated by all services.
+  The `aud` claim written into every JWT by `gsmauth` and validated by `gsmapplication` and `gsmoperations`.
+
+  <Note>
+    The `gateway` does **not** consume this as an environment variable. Its audience value is read from `appsettings.json` (`"Audience": "GSMClients"`). Only the three microservices receive this variable via `docker-compose.yml`.
+  </Note>
 
   **Default:** `GSMClients`
 
@@ -159,8 +167,8 @@ The following table shows which variables are required by each service:
 |---|:---:|:---:|:---:|:---:|:---:|
 | `JWT_SECRET` | ✅ | ✅ | ✅ | ✅ | — |
 | `DB_MASTER_URL` | — | ✅ | ✅ | ✅ | — |
-| `JwtSettings__Issuer` | ✅ | ✅ | ✅ | ✅ | — |
-| `JwtSettings__Audience` | ✅ | ✅ | ✅ | ✅ | — |
+| `JwtSettings__Issuer` | — | ✅ | ✅ | ✅ | — |
+| `JwtSettings__Audience` | — | ✅ | ✅ | ✅ | — |
 | `JwtSettings__ExpirationMinutes` | — | ✅ | — | — | — |
 | `ASPNETCORE_ENVIRONMENT` | ✅ | ✅ | ✅ | ✅ | — |
 | `ASPNETCORE_URLS` | ✅ | ✅ | ✅ | ✅ | — |

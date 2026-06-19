@@ -24,7 +24,7 @@ POST /api/security/v1/tenant/resolve
 
 ## Request Body
 
-<ParamField body="IDCompany" type="string" required>
+<ParamField body="idCompany" type="string" required>
   The company identifier to look up. Must be a non-empty string after trimming whitespace. This value is matched against the tenant registry to determine whether a database-per-tenant record exists.
 </ParamField>
 
@@ -71,7 +71,7 @@ All responses use the `ApiResponse<T>` envelope.
 </ResponseField>
 
 <ResponseField name="errorType" type="string | null">
-  Populated only when `success` is `false`. One of: `Validation` (missing or empty `IDCompany`), `NotFound` (tenant not found in the registry).
+  Populated only when `success` is `false`. One of: `Validation` (missing or empty `idCompany`), `NotFound` (tenant not found in the registry).
 </ResponseField>
 
 <ResponseField name="traceId" type="string | null">
@@ -89,11 +89,11 @@ All responses use the `ApiResponse<T>` envelope.
 | Status | `errorType` | Scenario |
 |--------|-------------|----------|
 | `200 OK` | — | Tenant was found; `data` contains `tenantExists: true` and optional styles. |
-| `200 OK` | `Validation` | `IDCompany` was missing or blank after trimming. |
-| `200 OK` | `NotFound` | The specified company ID does not match any registered tenant. |
+| `400 Bad Request` | `Validation` | `idCompany` was missing or blank after trimming. |
+| `404 Not Found` | `NotFound` | The specified company ID does not match any registered tenant. |
 
 <Note>
-  The Auth microservice always returns HTTP `200 OK` from this controller, even for validation and not-found conditions. Use the `success` and `errorType` fields in the response body to determine the outcome — do not rely on the HTTP status code alone.
+  Always check the `success` and `errorType` fields in the response body alongside the HTTP status code to determine the exact outcome. Error HTTP status codes are assigned by the `ApiResponseFilter` middleware based on the `errorType` returned by the controller.
 </Note>
 
 ---
@@ -107,7 +107,7 @@ curl --request POST \
   --url https://your-gateway-host/api/security/v1/tenant/resolve \
   --header 'Content-Type: application/json' \
   --data '{
-    "IDCompany": "GSM001"
+    "idCompany": "GSM001"
   }'
 ```
 
@@ -151,7 +151,7 @@ async function resolveTenant(idCompany: string): Promise<TenantResolveDto> {
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ IDCompany: idCompany }),
+    body: JSON.stringify({ idCompany: idCompany }),
   });
 
   const result: ApiResponse<TenantResolveDto> = await response.json();

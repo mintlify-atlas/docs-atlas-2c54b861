@@ -205,11 +205,24 @@ Menu options with an `ExternalRoute` value bypass the component registry entirel
 
 ## Sidebar & Menu API
 
-The `Sidebar` component in `src/layouts/shell/Sidebar.tsx` is populated by the `useMenu()` hook, which calls `GET /api/application/v1/application/getMenu` via the Orval-generated `useGetMenu` hook. The response is a JSON-encoded menu string that `useMenu` parses into a normalised `MenuOption[]` tree.
+The `Sidebar` component in `src/layouts/shell/Sidebar.tsx` is populated by the `useMenu()` hook, which calls `GET /api/application/v1/application/getMenu` via the Orval-generated `useGetMenu` hook. The response is a JSON-encoded menu string that `useMenu` parses into a normalised `MenuOption[]` tree and then applies i18n translations to each item's description.
 
 ```ts
-// src/shared/hooks/useMenu.ts — simplified
-const { data: rawItems } = useGetMenu({
+// src/shared/hooks/useMenu.ts — return shape
+type UseMenuResult = {
+  menuItems:  MenuOption[]   // top-level items with translated descriptions
+  shortcuts:  MenuOption[]   // all items (including children) flagged IsShortcut: true
+  allOptions: MenuOption[]   // flat list of every item and child
+  loading:    boolean
+  isError:    boolean
+}
+```
+
+Internally the hook queries the API with a 5-minute `staleTime` and a `select` transform that parses the raw JSON string into the `MenuOption[]` tree:
+
+```ts
+// src/shared/hooks/useMenu.ts — internal query
+const { data: rawItems = [], isLoading, isError } = useGetMenu({
   query: {
     queryKey:  ['menu'],
     staleTime: 5 * 60 * 1000,   // cache for 5 minutes

@@ -1,7 +1,7 @@
 ---
-title: "Master Data Endpoints for GSM Operations Service"
+title: "Master Data API Endpoints for GSM Operations Service"
 sidebarTitle: "Master Data"
-description: "Access global parameters, herb product catalogs, employee and supplier directories, product categories, and SKU definitions from the GSM Operations service."
+description: "Access global parameters, herb product catalogs, employee and supplier directories, product categories, and SKU definitions from the GSM Operations API."
 ---
 
 The master data endpoints provide read-only access to the foundational reference tables that drive the GSM Operations workflows. These include global and parameterised configuration attributes, the master herb/product catalog with variety breakdowns, employee and supplier directories (both supporting optional filter criteria in the request body), the hierarchical product category tree, and SKU definitions. All endpoints are scoped to the authenticated user's tenant via the gateway-injected `X-Company-Id` header.
@@ -49,7 +49,15 @@ GET /api/operations/v1/operations/parameters
     <ResponseField name="paramAttributes" type="array">
       List of attribute values under this parameter group.
 
-      <Expandable title="ParamAttributeDTO (each item)">
+      <Expandable title="ParamAttribute (each item)">
+        <ResponseField name="idParamAttribute" type="integer" required>
+          Auto-generated primary key for this attribute record.
+        </ResponseField>
+
+        <ResponseField name="idParameter" type="integer" required>
+          Foreign key referencing the parent `GlobalParameter` record.
+        </ResponseField>
+
         <ResponseField name="shortName" type="string | null">
           Short code for the attribute (e.g. `"KG"`, `"LB"`).
         </ResponseField>
@@ -60,6 +68,10 @@ GET /api/operations/v1/operations/parameters
 
         <ResponseField name="descr" type="string | null">
           Human-readable description of the attribute value.
+        </ResponseField>
+
+        <ResponseField name="globalParameter" type="object | null">
+          Back-reference to the parent `GlobalParameter`. Typically `null` in serialized responses unless explicitly loaded.
         </ResponseField>
       </Expandable>
     </ResponseField>
@@ -93,8 +105,8 @@ curl --request GET \
       "shortName": "WEIGHT",
       "descr": "Weight measurement units",
       "paramAttributes": [
-        { "shortName": "KG", "code": "KG", "descr": "Kilograms" },
-        { "shortName": "GR", "code": "GR", "descr": "Grams" }
+        { "idParamAttribute": 1, "idParameter": 1, "shortName": "KG", "code": "KG", "descr": "Kilograms", "globalParameter": null },
+        { "idParamAttribute": 2, "idParameter": 1, "shortName": "GR", "code": "GR", "descr": "Grams", "globalParameter": null }
       ]
     }
   ],

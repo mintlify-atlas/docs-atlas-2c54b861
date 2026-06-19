@@ -1,5 +1,5 @@
 ---
-title: "POST /api/security/v1/auth/login — User Login"
+title: "POST /api/security/v1/auth/login — Authenticate a User"
 sidebarTitle: "Login"
 description: "Authenticate a user against a tenant database, receive a signed JWT, and have the gsm_token HttpOnly cookie set automatically by the server."
 ---
@@ -24,15 +24,15 @@ POST /api/security/v1/auth/login
 
 ## Request Body
 
-<ParamField body="IDCompany" type="string" required>
+<ParamField body="idCompany" type="string" required>
   The unique identifier of the company (tenant) the user belongs to. Must be a non-empty string. This value selects the correct tenant database before credential verification begins.
 </ParamField>
 
-<ParamField body="User" type="string" required>
+<ParamField body="user" type="string" required>
   The username of the account attempting to log in. Minimum length: 1 character.
 </ParamField>
 
-<ParamField body="Password" type="string" required>
+<ParamField body="password" type="string" required>
   The account password in plain text. Minimum length: 1 character. Transmit only over HTTPS.
 </ParamField>
 
@@ -131,12 +131,8 @@ The browser will automatically attach this cookie to every subsequent same-origi
 | `200 OK` | — | Authentication succeeded. Token and user data returned. |
 | `400 Bad Request` | `Validation` | One or more required fields are missing or empty. |
 | `401 Unauthorized` | `Unauthorized` | Credentials were provided but are incorrect; user may also be inactive. |
-| `404 Not Found` | `NotFound` | The specified `IDCompany` does not exist, or the user was not found in that tenant. |
+| `404 Not Found` | `NotFound` | The specified `idCompany` does not exist, or the user was not found in that tenant. |
 | `500 Internal Server Error` | `Internal` | An unexpected server-side error occurred. |
-
-<Note>
-  Even error responses use HTTP `200 OK` at the transport level in some middleware configurations. Always check the `success` field in the response body, not only the HTTP status code.
-</Note>
 
 ---
 
@@ -149,9 +145,9 @@ curl --request POST \
   --url https://your-gateway-host/api/security/v1/auth/login \
   --header 'Content-Type: application/json' \
   --data '{
-    "IDCompany": "GSM001",
-    "User": "admin",
-    "Password": "Admin123*"
+    "idCompany": "GSM001",
+    "user": "admin",
+    "password": "Admin123*"
   }'
 ```
 
@@ -195,7 +191,7 @@ async function login(
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ IDCompany: idCompany, User: user, Password: password }),
+    body: JSON.stringify({ idCompany: idCompany, user: user, password: password }),
   });
 
   const result: ApiResponse<LoginDto> = await response.json();

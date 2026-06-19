@@ -1,7 +1,7 @@
 ---
 title: "GSMOperations: Agricultural Data and Transactions Service"
 sidebarTitle: "Operations Service"
-description: "Reference for the GSMOperations microservice — herb catalog, employees, suppliers, SKUs, transaction lifecycle management, and the integration execution engine."
+description: "Reference for GSMOperations — herb catalog, employees, suppliers, SKU definitions, transaction lifecycle management, and the outbound integration engine."
 ---
 
 GSMOperations is the core business-logic microservice of the GSM Application platform. It owns all operational agricultural data: herb product catalogs, employee and supplier registries, SKU definitions, product categories, and the full transaction lifecycle from creation through state transitions. It also hosts the integration execution engine that runs API rules configured in GSMApplication. Like every GSM microservice, it is fully multi-tenant — each request resolves to an isolated tenant database via the `X-Company-Id` header provided by the gateway.
@@ -185,19 +185,35 @@ Searches and returns transactions matching the provided criteria. Accepts a `Sea
 
 #### `POST /api/v1/integrations/exec-api`
 
-Executes a configured API rule by its `ShortName`. This endpoint is the runtime entry point for the integration engine: it looks up the rule definition (stored in GSMApplication), builds the outbound HTTP request, calls the configured endpoint, and returns the result.
+Executes an outbound HTTP call described by the `GenericApiDTO` payload. This endpoint is the runtime entry point for the integration engine: it builds the outbound HTTP request from the supplied target URL and operation, calls the configured endpoint, and returns the result.
 
-<ParamField body="genericApiDTO" type="GenericApiDTO" required>
-  Payload that identifies the API rule to execute and provides any additional runtime parameters needed by the rule.
+<ParamField body="UrlEndPoint" type="string" required>
+  The full target URL that the integration engine will call.
+</ParamField>
+
+<ParamField body="Operation" type="string" required>
+  The HTTP method to use when calling the target URL (e.g. `GET`, `POST`, `PUT`).
+</ParamField>
+
+<ParamField body="Headers" type="object | null">
+  Optional dictionary of HTTP header key-value pairs to include in the outbound request.
+</ParamField>
+
+<ParamField body="Parameters" type="object | null">
+  Optional dictionary of query string parameters to append to the target URL.
+</ParamField>
+
+<ParamField body="Body" type="object | null">
+  Optional request body to send with the outbound HTTP call.
 </ParamField>
 
 | Status | Condition |
 |---|---|
 | `200 OK` | Rule executed and response returned. |
-| `400 Bad Request` | Rule identifier is missing or payload is malformed. |
+| `400 Bad Request` | `UrlEndPoint` or `Operation` is missing or the payload is malformed. |
 | `401 Unauthorized` | Caller is not authenticated. |
 | `403 Forbidden` | Caller does not have permission to execute this rule. |
-| `404 Not Found` | Rule `ShortName` does not exist for the tenant. |
+| `404 Not Found` | The target endpoint could not be resolved or the requested resource was not found. |
 | `409 Conflict` | Integration call succeeded but produced a conflict state. |
 | `500 Internal Server Error` | Unexpected error during rule execution. |
 
